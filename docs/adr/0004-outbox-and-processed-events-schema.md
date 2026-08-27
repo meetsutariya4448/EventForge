@@ -76,3 +76,40 @@ avoids a special case later if it ever needs to publish delivery-status events.
 M1's relay design needs a claiming shape these indexes don't actually serve well in practice, or
 M1/M2 discover the sequence-assignment step is a contention point that argues for a different
 column shape (e.g. a `BIGSERIAL` instead of application-assigned sequence).
+
+## T3 posture update (M1): the relay is now the thing generating the churn this ADR anticipated
+
+M0 built the partial index and reserved the concern; M1's `OutboxRelayWorker` (ADR-0010) is the
+first code that actually writes the churn T3 warned about. This is the honest posture on where
+things stand, not an archival implementation — none exists yet.
+
+**What generates dead tuples now.** Every relay attempt against a row — successful or not — is an
+`UPDATE` (`markPublished` on success; `recordFailedAttempt` on a recoverable failure). Postgres's
+MVCC model means every `UPDATE` leaves the old row version behind as a dead tuple, regardless of
+whether the new version's `published_at` value still matches the partial index's
+`WHERE published_at IS NULL` predicate. A row that fails several times before eventually
+publishing (exactly what the M1 crash-window tests exercise under a degraded broker) produces one
+dead tuple *per attempt*, not one per row — retry-heavy periods multiply the churn rate, not just
+the final state.
+
+**Current index situation.** The partial index (`idx_outbox_events_unpublished`) itself shrinks
+correctly as rows publish — a published row's entry leaves the index the moment `published_at` is
+set, so the index's *live* size stays bounded by the backlog, exactly as designed. What it does
+*not* address is the dead-tuple debris each `UPDATE` leaves in the base table (and transiently in
+the index during the version transition) until `autovacuum` reclaims it. No archival or deletion
+path exists for published rows — they accumulate in the table indefinitely, read only by
+`autovacuum`'s bookkeeping, never by any query this project runs.
+
+**Expected bloat behavior.** Bloat should scale with two independent things: raw publish volume
+(one dead tuple per successful publish, at minimum) and retry rate under broker degradation (one
+additional dead tuple per failed attempt, on top of the eventual success). `autovacuum`'s default
+thresholds are tuned for general workloads, not specifically for a table with this attempt-heavy
+`UPDATE` pattern; whether the defaults keep pace here, or whether this table needs its own
+`autovacuum` tuning (lower scale factor) or `FILLFACTOR` adjustment (to favor HOT updates), is
+exactly a measurement question — argued from principle here, not from a number.
+
+**What M7 measures.** Actual bloat percentage on `outbox_events` under sustained load and under
+sustained broker degradation (retry-heavy conditions), whether `autovacuum`'s defaults keep pace or
+lag, and whether an explicit archival/deletion path for published rows (referenced but not built in
+either M0 or M1) is warranted before this becomes a real operational concern. No archival logic is
+implemented this session — this section is posture, not a fix.

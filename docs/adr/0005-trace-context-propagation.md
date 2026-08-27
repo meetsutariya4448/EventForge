@@ -58,6 +58,15 @@ publishing — is M1's job, not M0's; M0 lays the storage and transport shape M1
 - `VARCHAR(64)`/`VARCHAR(512)` sizing follows the W3C Trace Context spec's defined field formats
   (a `traceparent` value is a fixed-format string; `tracestate` is capped at 512 bytes by the
   spec) — not arbitrary.
+- **M4 note:** M1's relay (`OutboxRelayWorker`) restores the stored context by copying the
+  `traceparent`/`tracestate` strings verbatim into Kafka headers. That's correct for M1 — there is
+  no tracer in the process to ask for anything richer. It stops being correct once OpenTelemetry
+  lands in M4: at that point the relay needs to *extract* the stored context, start a child span
+  representing "the relay publish," and *inject* that child span's context into the headers —
+  verbatim copy alone would leave the relay invisible in the trace, and the downstream consumer
+  would come out as a sibling of the original HTTP span instead of its descendant. The stored
+  column format (plain `traceparent`/`tracestate` strings) does not need to change for this; only
+  what the relay does with them at publish time does.
 
 ## Revisit if
 
