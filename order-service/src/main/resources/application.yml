@@ -13,6 +13,25 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # Explicit, not relied-on-by-default (T2): per-partition ordering under retries requires
+      # this. Kafka 3.0+ clients default enable.idempotence to true already, but stating it here
+      # means a future client-version change can't silently regress it. Asserted by
+      # ProducerIdempotenceConfigTest, not just configured.
+      properties:
+        enable.idempotence: true
+        acks: all
+  jpa:
+    hibernate:
+      # No ddl-auto=update, ever (R3). "validate" fails fast if the entity mapping and the
+      # Flyway-migrated schema ever drift, rather than silently doing nothing or doing more.
+      ddl-auto: validate
+    open-in-view: false
+
+eventforge:
+  outbox:
+    relay:
+      enabled: true
+      topic: orders.events
 
 management:
   endpoints:
