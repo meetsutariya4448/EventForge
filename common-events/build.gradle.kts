@@ -8,11 +8,18 @@ dependencies {
     api("com.fasterxml.jackson.core:jackson-databind")
     api("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
 
-    // Auto-configuration support for the FaultInjector no-op default bean.
-    // compileOnly: every consuming Spring Boot service already brings these at runtime
-    // via spring-boot-starter; common-events must not force Spring onto non-Spring consumers.
+    // Auto-configuration support for the FaultInjector/OutboxWriter/OutboxRelay default beans.
+    // compileOnly: every consuming Spring Boot service already brings these at runtime via its
+    // own starters (spring-boot-starter-jdbc, spring-boot-starter-kafka); common-events must not
+    // force any of this onto a non-Spring or non-Kafka consumer.
     compileOnly("org.springframework.boot:spring-boot-autoconfigure")
     compileOnly("org.springframework:spring-context")
+    compileOnly("org.springframework:spring-tx")
+    compileOnly("org.springframework:spring-jdbc")
+    compileOnly("org.springframework.boot:spring-boot-jdbc")
+    compileOnly("org.springframework.kafka:spring-kafka")
+    compileOnly("org.springframework.boot:spring-boot-kafka")
+    compileOnly("org.apache.kafka:kafka-clients")
 
     testImplementation("org.junit.jupiter:junit-jupiter")
     testImplementation("org.assertj:assertj-core")
