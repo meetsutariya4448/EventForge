@@ -1,7 +1,11 @@
 package com.eventforge.events.outbox;
 
 import com.eventforge.events.fault.FaultInjector;
+import java.time.Clock;
+import java.time.Duration;
+import org.apache.kafka.clients.admin.NewTopic;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -9,7 +13,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.EnableScheduling;
-import org.apache.kafka.clients.admin.NewTopic;
 
 /**
  * Wires up the reusable outbox relay — claiming, publishing, and Kafka topic provisioning — for
@@ -21,6 +24,12 @@ import org.apache.kafka.clients.admin.NewTopic;
 @ConditionalOnProperty(prefix = "eventforge.outbox.relay", name = "enabled", havingValue = "true")
 @EnableScheduling
 public class OutboxRelayAutoConfiguration {
+
+    @Bean
+    @ConditionalOnMissingBean(Clock.class)
+    public Clock clock() {
+        return Clock.systemUTC();
+    }
 
     @Bean
     public NewTopic outboxRelayTopic(OutboxRelayProperties properties) {
@@ -35,8 +44,16 @@ public class OutboxRelayAutoConfiguration {
             JdbcTemplate jdbcTemplate,
             KafkaTemplate<String, String> kafkaTemplate,
             FaultInjector faultInjector,
+            Clock clock,
             OutboxRelayProperties properties) {
-        return new OutboxRelayWorker(jdbcTemplate, kafkaTemplate, faultInjector, properties.topic());
+        return new OutboxRelayWorker(
+                jdbcTemplate,
+                kafkaTemplate,
+                faultInjector,
+                properties.topic(),
+                clock,
+                Duration.ofMillis(properties.retryBackoffMs()),
+                Duration.ofMillis(properties.kafkaSendTimeoutMs()));
     }
 
     @Bean
