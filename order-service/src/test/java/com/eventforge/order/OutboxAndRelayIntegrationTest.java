@@ -8,6 +8,7 @@ import com.eventforge.events.envelope.EventEnvelopeMapper;
 import com.eventforge.events.fault.FaultInjectionPoint;
 import com.eventforge.events.fault.FaultInjector;
 import com.eventforge.events.outbox.OutboxRelayWorker;
+import com.eventforge.events.outbox.RelayOutcome;
 import com.eventforge.events.trace.TraceContextCapture;
 import com.eventforge.order.api.CreateOrderRequest;
 import com.eventforge.order.api.OrderResponse;
@@ -45,6 +46,12 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers;
  * The M1 deliverable: proves the outbox writer's atomic dual write, the relay's claim-publish-mark
  * cycle (including trace-context restoration into Kafka headers), and that the fault-injection
  * seam built in M0 is now wired to a real call site.
+ *
+ * <p>Every relay interaction here calls {@link OutboxRelayWorker#relayNextEvent()} directly and
+ * synchronously — never through the background {@code @Scheduled} poller — so these tests are
+ * fully deterministic with no {@code Thread.sleep}/wall-clock polling for the relay's own state
+ * changes. The one unavoidable bounded wait is consuming from the real Kafka broker itself, which
+ * is genuinely asynchronous I/O.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -105,15 +112,17 @@ class OutboxAndRelayIntegrationTest extends AbstractPostgresKafkaIntegrationTest
 
     @Test
     void relayPublishesClaimedEventToKafkaWithRestoredHeadersAndMarksItPublished() throws Exception {
+        drainAllPending();
         UUID orderId = createOrder(2500, null, null);
 
-        relayUntilPublished(orderId, Duration.ofSeconds(15));
+        RelayOutcome outcome = relayWorker.relayNextEvent();
+        assertThat(outcome).isEqualTo(RelayOutcome.PUBLISHED);
 
         Timestamp publishedAt = jdbcTemplate.queryForObject(
                 "SELECT published_at FROM outbox_events WHERE aggregate_id = ?", Timestamp.class, orderId.toString());
         assertThat(publishedAt).isNotNull();
 
-        ConsumerRecord<String, String> record = consumeByKey("orders.events", orderId.toString(), Duration.ofSeconds(15));
+        ConsumerRecord<String, String> record = consumeOneByKey("orders.events", orderId.toString(), Duration.ofSeconds(20));
         EventEnvelope envelope = mapper.readValue(record.value(), EventEnvelope.class);
         assertThat(envelope.eventType()).isEqualTo("OrderCreated");
         assertThat(envelope.aggregateId()).isEqualTo(orderId.toString());
@@ -131,8 +140,9 @@ class OutboxAndRelayIntegrationTest extends AbstractPostgresKafkaIntegrationTest
                 });
 
         // The fault fires after the real publish succeeds, outside the try/catch that wraps
-        // genuine publish failures as OutboxRelayException — so it propagates as-is. What matters
-        // for this test is that @Transactional rolled the claim back either way.
+        // genuine recoverable publish failures — so it propagates as-is and rolls back the whole
+        // transaction. See OutboxRelayCrashWindowIntegrationTest for the fuller version of this
+        // scenario (asserting the resulting duplicate on Kafka after "restart").
         assertThatThrownBy(() -> relayWorker.relayNextEvent())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("simulated crash");
@@ -164,29 +174,12 @@ class OutboxAndRelayIntegrationTest extends AbstractPostgresKafkaIntegrationTest
 
     private void drainAllPending() {
         int guard = 0;
-        while (relayWorker.relayNextEvent() && guard++ < 200) {
+        while (relayWorker.relayNextEvent() != RelayOutcome.NOTHING_TO_CLAIM && guard++ < 200) {
             // keep draining leftover unpublished rows from other tests in this shared container
         }
     }
 
-    private void relayUntilPublished(UUID orderId, Duration timeout) throws InterruptedException {
-        long deadline = System.nanoTime() + timeout.toNanos();
-        while (System.nanoTime() < deadline) {
-            Boolean done = jdbcTemplate.queryForObject(
-                    "SELECT published_at IS NOT NULL FROM outbox_events WHERE aggregate_id = ?",
-                    Boolean.class,
-                    orderId.toString());
-            if (Boolean.TRUE.equals(done)) {
-                return;
-            }
-            if (!relayWorker.relayNextEvent()) {
-                Thread.sleep(50);
-            }
-        }
-        throw new AssertionError("Timed out waiting for the relay to publish order " + orderId);
-    }
-
-    private ConsumerRecord<String, String> consumeByKey(String topic, String key, Duration timeout) {
+    private ConsumerRecord<String, String> consumeOneByKey(String topic, String key, Duration timeout) {
         Properties props = new Properties();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
         props.put(ConsumerConfig.GROUP_ID_CONFIG, "outbox-relay-test-" + UUID.randomUUID());
