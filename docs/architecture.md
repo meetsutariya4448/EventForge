@@ -72,15 +72,38 @@ exclusively — every event about a given order is keyed by `order_id` and lands
 partition of its aggregate-type topic (see ADR-0003). There is no ordering guarantee, and no
 reliance on one, across different orders or across the cluster as a whole.
 
-## What exists today (M0)
+## What exists today (M1)
 
 - `common-events`: the `EventEnvelope` record and its Jackson (de)serialization contract; the
-  `FaultInjector` seam (interface + no-op default), with no relay/consumer code calling it yet.
+  `FaultInjector` seam (interface + no-op default), now wired to two real call sites (see below);
+  `TraceContextCapture` (hand-generated/continued W3C `traceparent`, no OTel SDK yet — ADR-0011);
+  `OutboxWriter` (the one write-side mechanism every publishing service reuses) and the reusable
+  `OutboxRelayWorker`/`OutboxRelayScheduler`/`OutboxRelayAutoConfiguration` (single-worker,
+  one-row-per-transaction claim/publish/mark-published cycle — ADR-0010), off by default per
+  service, enabled via `eventforge.outbox.relay.enabled`.
 - `common-testing`: shared Testcontainers base class (real Postgres + real Kafka, no mocking), and
   the configurable fault-injector test double.
-- `order-service`, `payment-service`, `inventory-service`, `notification-service`: Spring Boot
-  skeletons, each with its own Flyway-migrated `outbox_events`/`processed_events` schema (schema
-  only — see ADR-0004), no business entities, no relay, no consumers.
+- `order-service`: has a real `Order` entity/repository/service/controller (`POST /orders`) — the
+  first real business writes in the project. `OrderService.createOrder` is where the M1 claim is
+  proven: the order row and its `OrderCreated` outbox row commit in one `@Transactional` method,
+  one Postgres transaction, no distributed transaction. The outbox relay is enabled here, publishing
+  to the `orders.events` topic (auto-provisioned via a `NewTopic` bean, 3 partitions/replica 1 —
+  ADR-0003). Kafka producer is explicitly configured with `enable.idempotence=true`/`acks=all`
+  (trap T2), asserted by a test against the real `ProducerFactory`, not just application.yml.
+- `payment-service`, `inventory-service`, `notification-service`: unchanged skeletons — nothing to
+  publish yet (that's M3's saga logic). They'll enable the same `common-events` relay mechanism
+  with no new relay code once they do.
 - `docker/docker-compose.yml`: Kafka (KRaft) + one Postgres per service, for local `make up` — see
   ADR-0008 for why this is deliberately separate from the Testcontainers-managed containers the
   test suite uses.
+
+## Fault-injection seam — now wired (M1)
+
+`FaultInjectionPoint.AFTER_DB_COMMIT_BEFORE_KAFKA_PUBLISH` fires in `OrderController`, right after
+the order+outbox transaction commits — a real crash here would leave a durable, unpublished outbox
+row for the relay to find later, proving the outbox pattern's actual point.
+`FaultInjectionPoint.AFTER_KAFKA_PUBLISH_BEFORE_MARK_PUBLISHED` fires in `OutboxRelayWorker`, right
+after the Kafka publish succeeds and before the row is marked published — a crash here leaves the
+row unpublished and it gets republished on the next poll (at-least-once, by design; M2's idempotent
+consumers are what absorb the resulting duplicate). Both are proven by
+`OutboxAndRelayIntegrationTest`, not just declared.

@@ -79,6 +79,50 @@ full path, `/opt/kafka/bin/kafka-broker-api-versions.sh`, not assumed to be reso
 Verified directly via `docker exec ... which kafka-broker-api-versions.sh` (not found) vs.
 `docker exec ... find / -iname kafka-broker-api-versions.sh` (found at the full path).
 
+## Non-obvious finding (M1): `@ConditionalOnBean` in auto-configuration needs `@AutoConfigureAfter`
+
+`OutboxWriterAutoConfiguration`'s bean method was gated with `@ConditionalOnBean(JdbcTemplate.class)`
+with no ordering hint. This is a documented Spring Boot footgun, not a Boot-4-specific change: Boot
+doesn't guarantee one auto-configuration class runs after another just because the second depends
+on a bean the first would create, so `@ConditionalOnBean` can evaluate before the target bean's
+definition exists — silently skipping the conditional bean rather than erroring. Symptom was a
+`NoSuchBeanDefinitionException: No qualifying bean of type OutboxWriter` at a completely unrelated
+injection point, with no indication the real cause was condition-ordering. Fixed by adding
+`@AutoConfiguration(after = JdbcTemplateAutoConfiguration.class)` alongside the class-level
+`@ConditionalOnBean`. `OutboxRelayAutoConfiguration` didn't need this fix: its `@Bean` methods take
+`JdbcTemplate`/`KafkaTemplate` as plain constructor-style parameters (resolved at instantiation
+time, after all definitions are registered), not as `@ConditionalOnBean` conditions (resolved
+early, at definition-registration time) — the two mechanisms have different timing, which is easy
+to conflate.
+
+## Non-obvious finding (M1): Spring Boot 4's default Jackson auto-configuration targets Jackson 3
+
+`spring-boot-jackson:4.1.1` (the module behind `JacksonAutoConfiguration`) depends on
+`tools.jackson.core:jackson-databind` (Jackson 3's relocated package), not
+`com.fasterxml.jackson.core:jackson-databind` (Jackson 2, "classic" Jackson — still the version
+`common-events`' `EventEnvelope` contract is built on, and still present on the classpath as a
+direct dependency). The practical effect: there is no Spring-managed
+`com.fasterxml.jackson.databind.ObjectMapper` bean to `@Autowired` by default in this project's
+Boot 4.1.1 setup, even with `spring-boot-starter-web` present. Surfaced as
+`NoSuchBeanDefinitionException: No qualifying bean of type 'com.fasterxml.jackson.databind.ObjectMapper'`
+when `OrderService` tried to inject one. Fixed by not depending on an ambient Spring bean at all —
+every class that needs to (de)serialize an `EventEnvelope` or its payload constructs its own mapper
+via `EventEnvelopeMapper.create()`, which was already the pattern `OutboxRelayWorker` and the M0
+round-trip test used. This is arguably the more correct design regardless of the Jackson-3 finding:
+the event contract's serialization rules (ignore-unknown-properties, `JavaTimeModule`) shouldn't
+depend on whatever a generic autowired mapper happens to be configured with.
+
+## Non-obvious finding (M1): `MockMvc`/`@AutoConfigureMockMvc` moved out of `spring-boot-starter-test`
+
+Testing a `@RestController` with `MockMvc` used to need only `spring-boot-starter-test`. In Boot
+4.1.1, `spring-boot-starter-test`'s POM no longer pulls in anything containing `MockMvc` or
+`@AutoConfigureMockMvc` — both now live in a dedicated `spring-boot-webmvc-test` module
+(`org.springframework.boot.webmvc.test.autoconfigure` package). Also tried `TestRestTemplate` first
+(the historical alternative for full-stack HTTP tests); it isn't present in any currently-resolved
+Spring Boot 4.1.1 jar either, and a reasonably thorough search didn't turn up which module (if any)
+still ships it — `MockMvc` via `spring-boot-webmvc-test` was confirmed working and used instead.
+Fixed by adding `testImplementation("org.springframework.boot:spring-boot-webmvc-test")` explicitly.
+
 ## Decision
 
 Pin the versions listed above; use the per-technology Boot 4 starters
