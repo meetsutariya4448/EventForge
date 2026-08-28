@@ -1,4 +1,4 @@
-# ADR-0010: Outbox relay concurrency model — single-worker, one-row-per-transaction
+# ADR-0010: Outbox relay concurrency model — one-row-per-transaction, verified safe for N workers
 
 ## Context
 
@@ -20,10 +20,11 @@ the only thing preventing a double-claim.
 **Chosen: claim, publish, and mark-published all inside one transaction, one row at a time.** The
 `FOR UPDATE SKIP LOCKED` row lock is held for the entire duration of the claim → Kafka publish →
 mark-published sequence, released only on commit (success) or rollback (failure). This makes
-double-claiming structurally impossible for as long as this stays single-worker: there is no
-window where a row is claimed but not yet locked. The tradeoff — holding a Postgres row lock for
-the duration of a network round-trip to Kafka — is accepted because M1 runs exactly one relay
-instance, so there is no contention to pay for.
+double-claiming structurally impossible: there is no window where a row is claimed but not yet
+locked, regardless of how many workers are running (see the "T1 is solved" amendment — this turned
+out to hold under concurrency too, not just for M1's single running instance). The tradeoff —
+holding a Postgres row lock for the duration of a network round-trip to Kafka — is accepted
+regardless of worker count; see the transaction-spans-network-call amendment for what that costs.
 
 **Batch size: one row per transaction, not N.** A batch transaction that partially succeeds (row 1
 publishes to Kafka, row 2 throws) would roll back the *whole* batch on exception — including row
@@ -38,17 +39,17 @@ isolated to exactly the row that failed.
 `OutboxRelayWorker.relayNextEvent()` (in `common-events`, reused by any service that enables the
 relay) claims exactly one row, publishes it, and marks it published — all inside one
 `@Transactional` method. `OutboxRelayScheduler` calls it in a loop, bounded by
-`batchCapPerPoll`, on a fixed-delay `@Scheduled` tick. **This must not be run as more than one
-relay instance per service until T1 is actually solved** (aggregate-level claiming or deterministic
-sharding by `aggregate_id`) — the schema from ADR-0004 already supports that future redesign
-(the `(aggregate_id, aggregate_sequence)` ordering and partial index don't need to change), but the
-current claiming logic does not implement it.
+`batchCapPerPoll`, on a fixed-delay `@Scheduled` tick. Multiple concurrent relay workers (multiple
+threads or processes calling this same claim query) are now verified safe — see the "T1 is solved"
+amendment below; this section originally said otherwise and has been corrected, not just appended
+to.
 
 ## Consequences
 
-- Single point of publish per service in M1 — no horizontal scaling of the relay yet. M6 (KEDA
-  autoscaling) will need to revisit this directly, since autoscaling the relay itself is exactly
-  the scenario T1 warns about.
+- M1 runs a single relay process per service, but not because concurrent workers are unsafe (they
+  aren't — see the "T1 is solved" amendment). M6's KEDA autoscaling can scale the relay's process
+  count directly on that basis; no claiming redesign is a prerequisite. Actual throughput under N
+  concurrent workers is still an M7 measurement question, not a correctness one.
 - A crash between Kafka publish and the mark-published `UPDATE` (the
   `AFTER_KAFKA_PUBLISH_BEFORE_MARK_PUBLISHED` fault-injection point, now wired to this real call
   site) leaves the row unpublished, and the same event gets republished on the next poll —
@@ -61,9 +62,10 @@ current claiming logic does not implement it.
 
 ## Revisit if
 
-T1 needs solving for real (multiple relay workers, or KEDA-driven relay scaling in M6) — at that
-point this ADR's single-worker assumption becomes the thing to redesign, using the aggregate-level
-claiming the schema was already built to support.
+Multi-worker throughput measured in M7 shows contention costs (lock waits, transaction pile-up
+under N workers) that argue for lease-based claiming despite T1's correctness already holding —
+see the transaction-spans-network-call amendment above, which covers that tradeoff regardless of
+worker count.
 
 ## Amendment: the transaction-spans-network-call anti-pattern, named plainly
 
@@ -89,10 +91,11 @@ demonstrates the duplicate directly; nothing about transaction span changes that
 - **A Postgres row lock held for the duration of external I/O.** Under a slow or degraded broker,
   every relay attempt holds `outbox_events`' row lock (and the pooled JDBC connection serving it)
   for as long as the Kafka call takes — up to `kafka-send-timeout-ms` per attempt.
-- **Connection pool pressure under sustained broker slowness.** With single-worker draining
-  (`OutboxRelayScheduler`'s adaptive loop), a slow broker serializes the relay's entire throughput
-  behind one connection held open per attempt; a struggling broker doesn't just slow down
-  publishing, it starves the pool of a connection for the duration of each stalled attempt.
+- **Connection pool pressure under sustained broker slowness.** Every concurrent relay
+  worker/thread holds its own connection open for the duration of its attempt; a struggling broker
+  doesn't just slow down publishing, it holds one pooled connection hostage per in-flight attempt
+  for as long as that attempt takes. This scales with worker count (see the T1 amendment below),
+  which is exactly why M7 needs to measure it rather than assume it's fine.
 - **Long-running transactions block vacuum.** A transaction that stays open across a slow Kafka
   call — even a single one — holds back Postgres's vacuum horizon for as long as it's open,
   delaying cleanup of dead tuples database-wide, not just on `outbox_events` (see the T3 posture
@@ -114,3 +117,56 @@ benchmarks) is where this gets a real answer, measured under a genuinely slow br
 argued from principle — connection pool exhaustion, vacuum lag, and actual publish latency under
 load are exactly the kind of numbers that decide whether lease-based claiming's added complexity
 is worth paying for.
+
+## Amendment: T1 is solved — multi-worker claiming verified, not just single-worker
+
+The ADR as originally written (and every M1 commit up to this point) said flatly that this design
+"must not be run as more than one relay instance per service until T1 is actually solved," framing
+aggregate-level claiming or deterministic sharding as *future* work needed before concurrent
+workers would be safe. That framing was wrong, and this amendment corrects it based on direct
+evidence rather than argument.
+
+**Why it turns out to already be solved.** The head-row-only eligibility rule introduced by the
+earlier amendment in this same ADR (`aggregate_sequence = (SELECT MIN(...) WHERE ... published_at
+IS NULL)`, added to fix single-worker head-of-line blocking under retry) has a second effect that
+wasn't the point when it was written: for any given aggregate, there is only ever **one** row that
+can match the claim query's `WHERE` clause at a time — the current head. Combined with
+`FOR UPDATE SKIP LOCKED`, this means a second worker's claim query, run concurrently against the
+same aggregate, has no *other* row for that aggregate to fall back to when the head is locked — it
+simply finds nothing for that aggregate and moves on to a different one (or returns
+`NOTHING_TO_CLAIM`). A later sequence number for the same aggregate can never become eligible until
+the head publishes and is removed from consideration. This is, in effect, exactly the
+"aggregate-level claiming" ADR-0004 and this ADR both said would eventually be needed — it was
+already implied by the head-row restriction, just not recognized as solving T1 at the time.
+
+**How it was verified, not just argued.** `MultiWorkerRelayOrderingIntegrationTest` runs
+`WORKER_COUNT` threads (10 in the committed test, verified up to 20 during development) all calling
+the same `OutboxRelayWorker.relayNextEvent()` concurrently — a valid stand-in for N separate relay
+processes, since the bean is stateless and each `@Transactional` call gets its own transaction
+regardless of which thread invokes it — against 6 aggregates with 8 sequenced events each,
+deliberately oversubscribed (more workers than aggregates) to force real contention on
+`FOR UPDATE SKIP LOCKED` rather than happening to avoid it. Run repeatedly (7 consecutive clean
+runs across both worker counts during verification): every event published exactly once, and every
+aggregate's Kafka records arrived in strict sequence order despite concurrent, interleaved
+processing across workers.
+
+**What this does NOT cover.** Verified: correctness (no double-claim, no order violation) under
+concurrent workers. Not verified: throughput/contention cost at scale — how claim latency degrades
+as worker count or backlog size grows, or whether row-lock contention on hot aggregates becomes a
+bottleneck under real load. That's M7's job, same as the transaction-spans-network-call tradeoff
+above; T1 being *correct* under concurrency doesn't mean it's *efficient* under concurrency, and
+this amendment makes no claim about the latter.
+
+**No implementation change accompanies this amendment.** The claiming SQL is unchanged from the
+previous amendment (which was written to fix head-of-line blocking, not multi-worker safety) —
+this amendment documents a property that design already had, verified by a new test, not a new
+design.
+
+## Revisit if (T1 specifically)
+
+M7's throughput measurements under real concurrent load show contention costs that argue lease-based
+claiming is worth its reclaim-timeout complexity despite T1's correctness already holding without
+it — or a future milestone needs claiming semantics this head-row restriction doesn't provide (e.g.
+processing multiple aggregates' events in a single transaction for throughput, which would
+reintroduce the batch-rollback tradeoff the one-row-per-transaction decision above was written to
+avoid).
