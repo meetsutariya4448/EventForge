@@ -105,6 +105,13 @@ reliance on one, across different orders or across the cluster as a whole.
   outage with zero-loss catch-up, a crash between Kafka ack and commit with the resulting duplicate
   asserted as correct, bounded backoff-driven retry via an injected `Clock`, and a relay "restart"
   mid-backlog that resumes and preserves per-aggregate order.
+  `MultiWorkerRelayOrderingIntegrationTest` verifies the same head-row claim design holds under N
+  real concurrent workers (T1 is solved — see ADR-0010's amendment). `common-testing` also now
+  provides `AbstractToxicKafkaIntegrationTest` (Kafka fronted by a real Toxiproxy proxy, verified
+  by `RelayUnderToxicNetworkIntegrationTest`) for injecting connection-refused and latency
+  failures — infrastructure built for M7's slow-broker measurement, not consumed by M1 itself.
+  See `docs/duplicate-taxonomy.md` for every mechanism that can produce a duplicate in this
+  project, which layer absorbs each, and the test that proves it.
 - `payment-service`, `inventory-service`, `notification-service`: unchanged skeletons — nothing to
   publish yet (that's M3's saga logic). They'll enable the same `common-events` relay mechanism
   with no new relay code once they do.

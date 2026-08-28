@@ -15,6 +15,9 @@ dependencies {
     api("org.testcontainers:testcontainers-junit-jupiter")
     api("org.testcontainers:testcontainers-postgresql")
     api("org.testcontainers:testcontainers-kafka")
+    // Fronts Kafka with a real network proxy for M7's slow-broker measurement work — lets tests
+    // inject connection-refused and latency, which a container pause/stop can't represent.
+    api("org.testcontainers:testcontainers-toxiproxy")
 
     runtimeOnly("org.junit.platform:junit-platform-launcher")
 }
