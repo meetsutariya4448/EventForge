@@ -24,9 +24,10 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Claims and attempts exactly one outbox row per call, single-worker (see ADR-0010: no
- * aggregate-level claiming yet — trap T1 is deferred, not solved, and this must not run as more
- * than one instance until it is).
+ * Claims and attempts exactly one outbox row per call. Safe to run as multiple concurrent
+ * instances — trap T1 is solved, not deferred, verified by {@code MultiWorkerRelayOrderingIntegrationTest}
+ * (see ADR-0010's "T1 is solved" amendment for how and what remains unverified: throughput under
+ * concurrency, not correctness).
  *
  * <p>A real, recoverable publish failure (broker down, timeout, ...) is handled gracefully: the
  * attempt is recorded durably (attempt count, last-attempt time, last error) and the transaction
