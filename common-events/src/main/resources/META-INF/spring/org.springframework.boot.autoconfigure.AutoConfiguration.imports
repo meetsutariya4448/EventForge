@@ -1,3 +1,5 @@
 com.eventforge.events.fault.FaultInjectorAutoConfiguration
 com.eventforge.events.outbox.OutboxWriterAutoConfiguration
 com.eventforge.events.outbox.OutboxRelayAutoConfiguration
+com.eventforge.events.consumer.ProcessedEventStoreAutoConfiguration
+com.eventforge.events.consumer.KafkaConsumerResilienceAutoConfiguration

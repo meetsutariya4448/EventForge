@@ -20,6 +20,7 @@ dependencies {
     compileOnly("org.springframework.kafka:spring-kafka")
     compileOnly("org.springframework.boot:spring-boot-kafka")
     compileOnly("org.apache.kafka:kafka-clients")
+    compileOnly("org.slf4j:slf4j-api")
 
     testImplementation("org.junit.jupiter:junit-jupiter")
     testImplementation("org.assertj:assertj-core")
