@@ -1,10 +1,9 @@
 # Architecture
 
-This describes EventForge's **target** architecture across all 10 milestones. As of M0, only the
-event contract (`common-events`), the fault-injection seam (`common-events`/`common-testing`), and
-the `outbox_events`/`processed_events` schema exist. There is no outbox relay, no saga
-orchestration, and no consumer business logic yet — the diagram below is the destination, not the
-current state.
+This describes EventForge's **target** architecture across all 10 milestones. As of M2, the outbox
+relay (M1) and idempotent consumers (M2) both exist and are proven against real infrastructure; saga
+orchestration and inventory reservation semantics (M3) do not exist yet — the diagram below is the
+destination, not the current state in full.
 
 ## Target flow
 
@@ -54,7 +53,7 @@ flowchart LR
     I --> J[OrderCancelled]
 ```
 
-## Consumer transaction shape (the core invariant, target for M2+)
+## Consumer transaction shape (the core invariant — proven, M2)
 
 ```
 BEGIN
@@ -72,10 +71,11 @@ exclusively — every event about a given order is keyed by `order_id` and lands
 partition of its aggregate-type topic (see ADR-0003). There is no ordering guarantee, and no
 reliance on one, across different orders or across the cluster as a whole.
 
-## What exists today (M1)
+## What exists today (M2)
 
 - `common-events`: the `EventEnvelope` record and its Jackson (de)serialization contract; the
-  `FaultInjector` seam (interface + no-op default), now wired to two real call sites (see below);
+  `FaultInjector` seam (interface + no-op default), now wired to all three real call sites in the
+  constitution (see below);
   `TraceContextCapture` (hand-generated/continued W3C `traceparent`, no OTel SDK yet — ADR-0011);
   `OutboxWriter` (the one write-side mechanism every publishing service reuses) and the reusable
   `OutboxRelayWorker`/`OutboxRelayScheduler`/`OutboxRelayAutoConfiguration` (single-worker,
@@ -93,6 +93,13 @@ reliance on one, across different orders or across the cluster as a whole.
   ADR-0010 amendment for why a fixed interval isn't used.
 - `common-testing`: shared Testcontainers base class (real Postgres + real Kafka, no mocking), and
   the configurable fault-injector test double.
+- `common-events` (M2 additions): `ProcessedEventStore` (the one dedupe primitive every consumer
+  reuses — `INSERT ... ON CONFLICT (consumer_group, event_id) DO NOTHING`, never a caught exception;
+  see ADR-0012 for why the key is composite) and `KafkaConsumerResilienceAutoConfiguration`
+  (bounded-retry `DefaultErrorHandler` backed by `FixedBackOff`, paired with Spring Kafka's real
+  `ContainerPausingBackOffHandler`/`ListenerContainerPauseService` so an exhausted-retry record
+  pauses and later resumes its own partition's container rather than being retried forever — no
+  Resilience4j, no DLQ, no retry topics, per the constitution's explicit non-goals).
 - `order-service`: has a real `Order` entity/repository/service/controller (`POST /orders`) — the
   first real business writes in the project. `OrderService.createOrder` is where the M1 claim is
   proven: the order row and its `OrderCreated` outbox row commit in one `@Transactional` method,
@@ -112,14 +119,28 @@ reliance on one, across different orders or across the cluster as a whole.
   failures — infrastructure built for M7's slow-broker measurement, not consumed by M1 itself.
   See `docs/duplicate-taxonomy.md` for every mechanism that can produce a duplicate in this
   project, which layer absorbs each, and the test that proves it.
-- `payment-service`, `inventory-service`, `notification-service`: unchanged skeletons — nothing to
-  publish yet (that's M3's saga logic). They'll enable the same `common-events` relay mechanism
-  with no new relay code once they do.
+- `payment-service`: consumes `OrderCreated` from `orders.events` under consumer group
+  `payment-service`, running the full consumer transaction (dedupe insert, `payments` row write,
+  `PaymentAuthorized` outbox write, one transaction, manual ack only after commit — auto-commit
+  disabled and asserted against the real `ConsumerFactory`/container factory, not just YAML). Its
+  business logic is deliberately a local ledger row, not a real payment call — see ADR-0013 (T4) for
+  exactly what that means and what changes with a real provider.
+- `inventory-service`: wired identically (dedupe, manual ack, resilience) under consumer group
+  `inventory-service`, but its business mutation stays minimal (an insert recording receipt, no next
+  outbox write) — reservation semantics are M3's scope, not M2's.
+- `notification-service`: consumes the same topic under its own, separate consumer group
+  (`notification-service`), the only service in the topology whose sole justification is
+  demonstrating independent consumer-group offsets on a shared topic — proven, not assumed, by
+  `IndependentConsumerGroupOffsetsIntegrationTest` (see `docs/duplicate-taxonomy.md`'s "what M2
+  actually built" section). Its `sent_notifications` table deliberately carries no uniqueness
+  constraint, unlike the other two services' business tables — a real external effect has no local
+  row to constrain a second attempt against, and that gap is left visible rather than papered over
+  (ADR-0012).
 - `docker/docker-compose.yml`: Kafka (KRaft) + one Postgres per service, for local `make up` — see
   ADR-0008 for why this is deliberately separate from the Testcontainers-managed containers the
   test suite uses.
 
-## Fault-injection seam — now wired (M1)
+## Fault-injection seam — all three points wired (M2)
 
 `FaultInjectionPoint.AFTER_DB_COMMIT_BEFORE_KAFKA_PUBLISH` fires in `OrderController`, right after
 the order+outbox transaction commits — a real crash here would leave a durable, unpublished outbox
@@ -129,3 +150,9 @@ after the Kafka publish succeeds and before the row is marked published — a cr
 row unpublished and it gets republished on the next poll (at-least-once, by design; M2's idempotent
 consumers are what absorb the resulting duplicate). Both are proven by
 `OutboxAndRelayIntegrationTest`, not just declared.
+`FaultInjectionPoint.AFTER_BUSINESS_COMMIT_BEFORE_OFFSET_ACK` fires in each service's
+`@KafkaListener` (`PaymentEventListener`, `InventoryEventListener`), right after the consumer
+transaction commits and before `ack.acknowledge()` — a real crash here leaves the offset uncommitted,
+so the broker redelivers the already-processed event, and it's the dedupe insert (not offset
+position) that keeps the resulting redelivery a no-op. Proven by
+`CrashAfterCommitBeforeAckIntegrationTest`.
