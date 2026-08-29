@@ -25,8 +25,14 @@ spring:
       ddl-auto: validate
     open-in-view: false
 
-# No eventforge.outbox.relay.* here: inventory-service has nothing to publish yet in M2
-# (reservation semantics are M3) - it stays consumer-only.
+eventforge:
+  outbox:
+    relay:
+      # M3: reservation semantics give inventory-service its first thing to publish
+      # (InventoryReserved/InventoryReservationFailed) - the same generic relay mechanism M1 built,
+      # no new relay code needed, exactly as the M2 comment here anticipated.
+      enabled: true
+      topic: inventory.events
 
 management:
   endpoints:
