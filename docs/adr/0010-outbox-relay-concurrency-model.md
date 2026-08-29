@@ -1,172 +1,121 @@
-# ADR-0010: Outbox relay concurrency model — one-row-per-transaction, verified safe for N workers
+# ADR-0010: Outbox relay concurrency model
 
 ## Context
 
-M1 needs a working relay: claim unpublished outbox rows, publish them to Kafka, mark them
-published. Trap T1 (constitution Part 4) already flags that naive `FOR UPDATE SKIP LOCKED` row
-claiming lets two *parallel* relay workers publish two events for the same aggregate out of
-creation order — but T1 also says this is "decided in later milestones." M1 has to ship a relay
-that is correct *as specified*, without either solving T1 early or writing something that
-silently breaks the moment a second worker exists.
-
-## Options considered
-
-**Claim a batch, publish and mark-published in separate transactions.** Better throughput (locks
-aren't held across Kafka I/O), but the claim and the eventual publish are two different
-transactions — a second poll cycle (or, if ever run, a second worker) could re-claim the same row
-in the gap between them, since releasing the claim transaction's lock before publishing removes
-the only thing preventing a double-claim.
-
-**Chosen: claim, publish, and mark-published all inside one transaction, one row at a time.** The
-`FOR UPDATE SKIP LOCKED` row lock is held for the entire duration of the claim → Kafka publish →
-mark-published sequence, released only on commit (success) or rollback (failure). This makes
-double-claiming structurally impossible: there is no window where a row is claimed but not yet
-locked, regardless of how many workers are running (see the "T1 is solved" amendment — this turned
-out to hold under concurrency too, not just for M1's single running instance). The tradeoff —
-holding a Postgres row lock for the duration of a network round-trip to Kafka — is accepted
-regardless of worker count; see the transaction-spans-network-call amendment for what that costs.
-
-**Batch size: one row per transaction, not N.** A batch transaction that partially succeeds (row 1
-publishes to Kafka, row 2 throws) would roll back the *whole* batch on exception — including row
-1's `published_at` update — even though row 1's Kafka message was already sent and can't be
-un-sent. That's not a bug (at-least-once delivery already expects duplicates, which M2's
-idempotent consumers exist to absorb), but it needlessly widens the blast radius of one failure to
-several rows for no benefit at single-worker scale. One row per transaction keeps failure
-isolated to exactly the row that failed.
+The relay claims unpublished `outbox_events` rows, publishes them to Kafka, and marks them
+published. Two correctness properties matter: no row is ever claimed by two workers at once
+(double-publish), and per-aggregate publish order is preserved (trap T1) even under retries and
+concurrent workers. A third property — efficient use of Postgres connections and locks under a
+slow or degraded broker — is a real cost of the design below, deliberately accepted for now and
+explicitly deferred to M7 to measure rather than guess at.
 
 ## Decision
 
-`OutboxRelayWorker.relayNextEvent()` (in `common-events`, reused by any service that enables the
-relay) claims exactly one row, publishes it, and marks it published — all inside one
-`@Transactional` method. `OutboxRelayScheduler` calls it in a loop, bounded by
-`batchCapPerPoll`, on a fixed-delay `@Scheduled` tick. Multiple concurrent relay workers (multiple
-threads or processes calling this same claim query) are now verified safe — see the "T1 is solved"
-amendment below; this section originally said otherwise and has been corrected, not just appended
-to.
+**Claim, publish, and mark-published happen inside one `@Transactional` method
+(`OutboxRelayWorker.relayNextEvent()`), one row at a time.** The claim query:
+
+```sql
+SELECT event_id, aggregate_id, event_type, schema_version, correlation_id,
+       causation_id, traceparent, tracestate, payload::text AS payload_text, occurred_at
+FROM outbox_events o
+WHERE published_at IS NULL
+  AND (last_attempt_at IS NULL OR last_attempt_at <= ?)
+  AND aggregate_sequence = (
+      SELECT MIN(o2.aggregate_sequence)
+      FROM outbox_events o2
+      WHERE o2.aggregate_id = o.aggregate_id AND o2.published_at IS NULL
+  )
+ORDER BY last_attempt_at ASC NULLS FIRST, aggregate_id, aggregate_sequence
+FOR UPDATE SKIP LOCKED
+LIMIT 1
+```
+
+Three properties of this query, each load-bearing:
+
+- **`FOR UPDATE SKIP LOCKED` + one row per transaction** makes double-claiming structurally
+  impossible: there is no window where a row is claimed but not yet locked, and the lock is held
+  for the claim → Kafka publish → mark-published sequence, released only on commit or rollback.
+- **The head-row restriction** (`aggregate_sequence = MIN(... WHERE published_at IS NULL)`) means
+  only an aggregate's lowest unpublished sequence number is ever an eligible claim target. A later
+  sequence number for the same aggregate can never be claimed while an earlier one is still
+  pending — by any worker, concurrently or not. This is what makes the design safe for **N
+  concurrent relay workers**, not just one: a second worker contending for a locked aggregate has
+  no fallback row for that aggregate to fall through to, so it simply finds nothing there and
+  moves to a different aggregate (or gets `NOTHING_TO_CLAIM`). Verified directly by
+  `MultiWorkerRelayOrderingIntegrationTest` — 10 concurrent threads (stress-verified to 20) against
+  6 oversubscribed aggregates, real `FOR UPDATE SKIP LOCKED` contention, zero double-claims and
+  zero order violations across 7 consecutive runs; a negative control (reverting to naive
+  `ORDER BY aggregate_id, aggregate_sequence` with no head-row restriction) reproduced a genuine
+  per-aggregate order violation, confirming the test actually detects the property it claims to
+  verify.
+- **Ordering candidates by `last_attempt_at ASC NULLS FIRST`** (oldest/never-attempted first,
+  rather than by `aggregate_id`) prevents head-of-line blocking under retry: without it, a single
+  persistently-failing aggregate would keep re-qualifying for reclaim (its `last_attempt_at` is
+  always the most recent) and starve every other aggregate in the table.
+
+**Batch size is one row per transaction, not N.** A batch transaction that partially succeeds (row
+1 publishes to Kafka, row 2 throws) would roll back the whole batch on exception — including row
+1's `published_at` update — even though row 1's Kafka message was already sent and can't be
+un-sent. One row per transaction keeps a failure's blast radius to exactly the row that failed.
+
+**The transaction spans the Kafka network call.** This is a known anti-pattern — a database
+transaction should not span an external network call — retained deliberately, not accidentally.
+It buys **no reduction in duplicates**: a crash after the broker acks the publish and before the
+transaction commits republishes the row on the next attempt regardless of whether the transaction
+spans the network call or not (proven by
+`OutboxRelayCrashWindowIntegrationTest#aCrashAfterKafkaAckBeforeCommitRepublishesOnRestartAndTheDuplicateIsCorrect`).
+What it actually costs: a Postgres row lock and pooled JDBC connection held for the duration of
+each attempt (up to `kafka-send-timeout-ms`), connection-pool pressure that scales with worker
+count under a slow broker, and a long-running transaction holding back Postgres's vacuum horizon
+for as long as it's open (feeding the dead-tuple churn `outbox_events` already generates — see
+ADR-0004's T3 posture).
+
+**Alternative considered, not implemented: lease-based claiming.** Mark a row with a
+`leased_until` timestamp and release the Postgres lock immediately, publish to Kafka outside any
+open transaction, then mark it published in a separate fast transaction referencing the lease.
+This would decouple lock/connection hold time from Kafka I/O entirely, at the cost of a genuine
+reclaim-timeout mechanism for a worker that crashes mid-lease: choosing a timeout long enough to
+avoid reclaiming a still-in-progress attempt but short enough to recover promptly, handling clock
+skew between the value written and the value compared against, and handling a crash *during* the
+reclaim itself. None of that exists today, and none of it is a small addition.
 
 ## Consequences
 
-- M1 runs a single relay process per service, but not because concurrent workers are unsafe (they
-  aren't — see the "T1 is solved" amendment). M6's KEDA autoscaling can scale the relay's process
-  count directly on that basis; no claiming redesign is a prerequisite. Actual throughput under N
-  concurrent workers is still an M7 measurement question, not a correctness one.
+- Safe to run as multiple concurrent relay workers/processes today — no claiming redesign is a
+  prerequisite for M6's KEDA autoscaling to scale the relay's process count directly.
+- Correctness under concurrency is verified; **efficiency under concurrency is not.** How claim
+  latency degrades as worker count or backlog size grows, and whether row-lock contention on hot
+  aggregates becomes a bottleneck under real load, are open questions M7 measures, not arguments
+  settled here.
 - A crash between Kafka publish and the mark-published `UPDATE` (the
-  `AFTER_KAFKA_PUBLISH_BEFORE_MARK_PUBLISHED` fault-injection point, now wired to this real call
-  site) leaves the row unpublished, and the same event gets republished on the next poll —
-  proven directly by `OutboxAndRelayIntegrationTest#aCrashAfterKafkaPublishBeforeMarkPublishedLeavesTheRowUnpublished`.
-  This is expected at-least-once behavior, not a bug to fix here.
-- Kafka publish is synchronous (`kafkaTemplate.send(record).get(10, TimeUnit.SECONDS)`) inside the
-  transaction, so the relay's throughput is bounded by Kafka round-trip latency times one row at a
-  time. Acceptable at M1/portfolio scale; a future milestone's performance work (M7) would be where
-  this becomes a number worth optimizing against, not before.
+  `AFTER_KAFKA_PUBLISH_BEFORE_MARK_PUBLISHED` fault-injection point) leaves the row unpublished,
+  and the same event is republished on the next attempt — expected at-least-once behavior, not a
+  bug, and exactly the case M2's idempotent consumers exist to absorb (see
+  `docs/duplicate-taxonomy.md`).
 
 ## Revisit if
 
-Multi-worker throughput measured in M7 shows contention costs (lock waits, transaction pile-up
-under N workers) that argue for lease-based claiming despite T1's correctness already holding —
-see the transaction-spans-network-call amendment above, which covers that tradeoff regardless of
-worker count.
+M7's throughput measurements under real concurrent load and a genuinely slow broker show
+connection-pool exhaustion, vacuum lag, or publish-latency costs that argue lease-based claiming is
+worth its reclaim-timeout complexity — correctness alone doesn't settle that tradeoff, only
+measurement does.
 
-## Amendment: the transaction-spans-network-call anti-pattern, named plainly
+## Changelog
 
-The design above holds a Postgres transaction — row lock included — open for the entire duration
-of the synchronous Kafka `send()` call. This is a known anti-pattern: a database transaction
-should not span an external network call. It is retained deliberately for M1, not accidentally,
-and this amendment states the honest cost/benefit rather than leaving it implied.
-
-**What it does NOT buy: any reduction in duplicates.** It's tempting to read "the claim, publish,
-and mark-published are all one atomic unit" as meaning crashes are handled more cleanly than a
-split design would. They aren't. A crash after the broker acks the publish and before the
-transaction commits republishes the row on the next attempt — this is true of the current
-single-transaction design, and it would be exactly as true of a claim-commit / publish /
-mark-commit split design with three separate transactions. The window where "the broker has the
-message but we haven't durably recorded that fact yet" exists in *any* design that publishes to an
-external system from inside a claim-and-mark cycle; spanning the transaction across the network
-call doesn't close that window, it just also holds a lock open while the window is open. Scenario
-(b) of the M1 crash-window tests
-(`OutboxRelayCrashWindowIntegrationTest#aCrashAfterKafkaAckBeforeCommitRepublishesOnRestartAndTheDuplicateIsCorrect`)
-demonstrates the duplicate directly; nothing about transaction span changes that outcome.
-
-**What it actually costs:**
-- **A Postgres row lock held for the duration of external I/O.** Under a slow or degraded broker,
-  every relay attempt holds `outbox_events`' row lock (and the pooled JDBC connection serving it)
-  for as long as the Kafka call takes — up to `kafka-send-timeout-ms` per attempt.
-- **Connection pool pressure under sustained broker slowness.** Every concurrent relay
-  worker/thread holds its own connection open for the duration of its attempt; a struggling broker
-  doesn't just slow down publishing, it holds one pooled connection hostage per in-flight attempt
-  for as long as that attempt takes. This scales with worker count (see the T1 amendment below),
-  which is exactly why M7 needs to measure it rather than assume it's fine.
-- **Long-running transactions block vacuum.** A transaction that stays open across a slow Kafka
-  call — even a single one — holds back Postgres's vacuum horizon for as long as it's open,
-  delaying cleanup of dead tuples database-wide, not just on `outbox_events` (see the T3 posture
-  below, where the relay is itself now a source of that dead-tuple churn).
-
-**Alternative considered: lease-based claiming.** Instead of holding the row lock across the
-network call, a claim would mark a row with a `leased_until` timestamp (and release the actual
-Postgres lock immediately), publish to Kafka outside any open transaction, then mark it published
-in a separate, fast transaction referencing the lease. This decouples Postgres lock/connection
-hold time from Kafka I/O time entirely. Its cost is real complexity this design avoids: a
-**reclaim-timeout mechanism** is needed for a worker that crashes mid-lease without completing —
-choosing a timeout that's long enough to avoid reclaiming a still-in-progress attempt but short
-enough to recover promptly, handling clock skew between the value written and the value compared
-against, and handling a crash *during* the reclaim itself. None of that exists in the current
-design, and none of it is a small addition.
-
-**Deferred to M7.** This tradeoff is not being decided here. M7 (performance engineering &
-benchmarks) is where this gets a real answer, measured under a genuinely slow broker rather than
-argued from principle — connection pool exhaustion, vacuum lag, and actual publish latency under
-load are exactly the kind of numbers that decide whether lease-based claiming's added complexity
-is worth paying for.
-
-## Amendment: T1 is solved — multi-worker claiming verified, not just single-worker
-
-The ADR as originally written (and every M1 commit up to this point) said flatly that this design
-"must not be run as more than one relay instance per service until T1 is actually solved," framing
-aggregate-level claiming or deterministic sharding as *future* work needed before concurrent
-workers would be safe. That framing was wrong, and this amendment corrects it based on direct
-evidence rather than argument.
-
-**Why it turns out to already be solved.** The head-row-only eligibility rule introduced by the
-earlier amendment in this same ADR (`aggregate_sequence = (SELECT MIN(...) WHERE ... published_at
-IS NULL)`, added to fix single-worker head-of-line blocking under retry) has a second effect that
-wasn't the point when it was written: for any given aggregate, there is only ever **one** row that
-can match the claim query's `WHERE` clause at a time — the current head. Combined with
-`FOR UPDATE SKIP LOCKED`, this means a second worker's claim query, run concurrently against the
-same aggregate, has no *other* row for that aggregate to fall back to when the head is locked — it
-simply finds nothing for that aggregate and moves on to a different one (or returns
-`NOTHING_TO_CLAIM`). A later sequence number for the same aggregate can never become eligible until
-the head publishes and is removed from consideration. This is, in effect, exactly the
-"aggregate-level claiming" ADR-0004 and this ADR both said would eventually be needed — it was
-already implied by the head-row restriction, just not recognized as solving T1 at the time.
-
-**How it was verified, not just argued.** `MultiWorkerRelayOrderingIntegrationTest` runs
-`WORKER_COUNT` threads (10 in the committed test, verified up to 20 during development) all calling
-the same `OutboxRelayWorker.relayNextEvent()` concurrently — a valid stand-in for N separate relay
-processes, since the bean is stateless and each `@Transactional` call gets its own transaction
-regardless of which thread invokes it — against 6 aggregates with 8 sequenced events each,
-deliberately oversubscribed (more workers than aggregates) to force real contention on
-`FOR UPDATE SKIP LOCKED` rather than happening to avoid it. Run repeatedly (7 consecutive clean
-runs across both worker counts during verification): every event published exactly once, and every
-aggregate's Kafka records arrived in strict sequence order despite concurrent, interleaved
-processing across workers.
-
-**What this does NOT cover.** Verified: correctness (no double-claim, no order violation) under
-concurrent workers. Not verified: throughput/contention cost at scale — how claim latency degrades
-as worker count or backlog size grows, or whether row-lock contention on hot aggregates becomes a
-bottleneck under real load. That's M7's job, same as the transaction-spans-network-call tradeoff
-above; T1 being *correct* under concurrency doesn't mean it's *efficient* under concurrency, and
-this amendment makes no claim about the latter.
-
-**No implementation change accompanies this amendment.** The claiming SQL is unchanged from the
-previous amendment (which was written to fix head-of-line blocking, not multi-worker safety) —
-this amendment documents a property that design already had, verified by a new test, not a new
-design.
-
-## Revisit if (T1 specifically)
-
-M7's throughput measurements under real concurrent load show contention costs that argue lease-based
-claiming is worth its reclaim-timeout complexity despite T1's correctness already holding without
-it — or a future milestone needs claiming semantics this head-row restriction doesn't provide (e.g.
-processing multiple aggregates' events in a single transaction for throughput, which would
-reintroduce the batch-rollback tradeoff the one-row-per-transaction decision above was written to
-avoid).
+- **2026-08-27** — Initial decision: one-row-per-transaction claiming, `ORDER BY aggregate_id,
+  aggregate_sequence`. Stated that this "must not run as more than one relay instance until T1 is
+  actually solved" — this constraint was wrong, see below.
+- **2026-08-27** — M1 crash-window testing found a real head-of-line-blocking bug: under retry, a
+  persistently-failing aggregate kept getting reclaimed every cycle (its `last_attempt_at` always
+  looked most recent), starving every other aggregate. Added the head-row-only eligibility
+  restriction and `last_attempt_at`-first ordering to fix it.
+- **2026-08-27** — `MultiWorkerRelayOrderingIntegrationTest` (concurrent workers, oversubscribed
+  aggregates, plus a negative control confirming the test genuinely detects order violations)
+  showed the head-row restriction added in the previous revision already provides the
+  per-aggregate serialization T1 needs — it was fixing an unrelated single-worker retry bug and
+  happened to solve multi-worker safety too, which nobody had recognized when it was written. The
+  original "must not run more than one instance" constraint was therefore wrong: it assumed
+  aggregate-level claiming would need to be purpose-built later, when a fix already in place for a
+  different reason had already provided it. This document was rewritten from three layers of
+  amendment into the single current decision above, rather than left as a history a reader had to
+  reconstruct.
