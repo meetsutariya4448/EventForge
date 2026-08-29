@@ -19,5 +19,10 @@ dependencies {
     // inject connection-refused and latency, which a container pause/stop can't represent.
     api("org.testcontainers:testcontainers-toxiproxy")
 
+    // M3 item 7: the shared rule that fails the build if a service publishes to Kafka outside
+    // OutboxWriter/OutboxRelayWorker. One well-established tool for exactly this job, not a
+    // hand-rolled reflection scanner.
+    api("com.tngtech.archunit:archunit-junit5:1.3.0")
+
     runtimeOnly("org.junit.platform:junit-platform-launcher")
 }
