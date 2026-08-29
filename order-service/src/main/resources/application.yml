@@ -20,6 +20,16 @@ spring:
       properties:
         enable.idempotence: true
         acks: all
+    # M3: order-service is now also a consumer — the orchestrator's own SagaEventListener, on
+    # payments.events/inventory.events. Same manual-ack discipline as every M2 consumer, asserted
+    # against the real factory by OrderServiceConsumerManualAckConfigTest, not just trusted here.
+    consumer:
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      ack-mode: manual_immediate
   jpa:
     hibernate:
       # No ddl-auto=update, ever (R3). "validate" fails fast if the entity mapping and the
@@ -32,6 +42,14 @@ eventforge:
     relay:
       enabled: true
       topic: orders.events
+  # M3 saga timeouts (constitution items 5-6) - not tuned, same posture as the relay's own
+  # retry-backoff defaults (R2).
+  saga:
+    authorize-payment-timeout-ms: 10000
+    reserve-inventory-timeout-ms: 10000
+    refund-payment-timeout-ms: 10000
+    max-compensation-attempts: 3
+    sweep-interval-ms: 1000
 
 management:
   endpoints:

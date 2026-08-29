@@ -56,4 +56,28 @@ public class Order {
     public Instant getUpdatedAt() {
         return updatedAt;
     }
+
+    /** Saga reached {@code COMPLETED} (constitution item 3's happy-path terminal state). */
+    public void confirm(Instant now) {
+        this.status = "CONFIRMED";
+        this.updatedAt = now;
+    }
+
+    /** Saga reached {@code COMPENSATED} — compensation succeeded (or none was needed). */
+    public void cancel(Instant now) {
+        this.status = "CANCELLED";
+        this.updatedAt = now;
+    }
+
+    /**
+     * Saga reached {@code COMPENSATION_FAILED} (constitution item 6, the hard case): compensation
+     * itself did not complete. Distinct from a clean {@code CANCELLED} so this order is visible via
+     * SQL to an operator — {@code SELECT * FROM orders WHERE status = 'CANCELLATION_FAILED'} — as
+     * needing the manual remediation in {@code docs/runbooks/compensation-failure.md}, not lost in
+     * ordinary cancellations.
+     */
+    public void markCancellationFailed(Instant now) {
+        this.status = "CANCELLATION_FAILED";
+        this.updatedAt = now;
+    }
 }

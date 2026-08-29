@@ -106,6 +106,13 @@ class OutboxRelayCrashWindowIntegrationTest {
         // pauseBroker() windows. Pushed out far past any test's runtime instead of disabled
         // outright, since there's no supported way to omit just the scheduler bean here.
         registry.add("eventforge.outbox.relay.poll-interval-ms", () -> "3600000");
+        // This class shares its injected MutableClock across the relay's own retry backoff and
+        // the saga orchestrator's timeout deadlines (both read the same Clock bean). These tests
+        // advance that clock by many seconds at a time to drive relay backoff windows, which would
+        // also make any saga created here look "timed out" to a real-wall-clock-scheduled sweep —
+        // an unrelated M3 mechanism this M1 test has no business exercising. Pushed out the same
+        // way the relay's own background poller is above.
+        registry.add("eventforge.saga.sweep-interval-ms", () -> "3600000");
     }
 
     @Autowired
@@ -174,7 +181,7 @@ class OutboxRelayCrashWindowIntegrationTest {
             }
             for (UUID id : orderIds) {
                 Map<String, Object> row = jdbcTemplate.queryForMap(
-                        "SELECT published_at, publish_attempts FROM outbox_events WHERE aggregate_id = ?",
+                        "SELECT published_at, publish_attempts FROM outbox_events WHERE aggregate_id = ? AND event_type = 'OrderCreated'",
                         id.toString());
                 assertThat(row.get("published_at")).isNull();
                 assertThat(((Number) row.get("publish_attempts")).intValue()).isGreaterThanOrEqualTo(1);
@@ -184,19 +191,22 @@ class OutboxRelayCrashWindowIntegrationTest {
         }
 
         // Advance past the backoff window on every non-published attempt, not just once: bounded
-        // by the guard counter (logical progress), never by elapsed real time.
-        int published = 0;
+        // by the guard counter (logical progress), never by elapsed real time. Drains until
+        // genuinely nothing is left, rather than stopping at orderIds.size() published rows: each
+        // order now has TWO outbox rows (OrderCreated, then AuthorizePayment once OrderCreated
+        // publishes — M3's saga dispatch, same transaction as the order write), and which
+        // interleaving order they publish in across 3 orders isn't fixed, so counting to a target
+        // would risk stopping before every order's OrderCreated specifically has gone out.
         int guard = 0;
         mutableClock.advance(RETRY_BACKOFF.plusSeconds(1));
-        while (published < orderIds.size() && guard++ < 40) {
-            RelayOutcome outcome = relayWorker.relayNextEvent();
-            if (outcome == RelayOutcome.PUBLISHED) {
-                published++;
-            } else {
+        RelayOutcome outcome;
+        do {
+            outcome = relayWorker.relayNextEvent();
+            if (outcome != RelayOutcome.PUBLISHED) {
                 mutableClock.advance(RETRY_BACKOFF.plusSeconds(1));
             }
-        }
-        assertThat(published).isEqualTo(orderIds.size());
+        } while (outcome != RelayOutcome.NOTHING_TO_CLAIM && guard++ < 60);
+        assertThat(outcome).isEqualTo(RelayOutcome.NOTHING_TO_CLAIM);
 
         Map<String, Integer> expected =
                 orderIds.stream().collect(Collectors.toMap(UUID::toString, id -> 1));
@@ -237,7 +247,7 @@ class OutboxRelayCrashWindowIntegrationTest {
         assertThatThrownBy(() -> relayWorker.relayNextEvent()).isInstanceOf(IllegalStateException.class);
 
         Timestamp publishedAtAfterCrash = jdbcTemplate.queryForObject(
-                "SELECT published_at FROM outbox_events WHERE aggregate_id = ?", Timestamp.class, orderId.toString());
+                "SELECT published_at FROM outbox_events WHERE aggregate_id = ? AND event_type = 'OrderCreated'", Timestamp.class, orderId.toString());
         assertThat(publishedAtAfterCrash).isNull();
 
         // "Restart": the worker holds no in-memory state between calls (ADR-0010) — everything
@@ -281,7 +291,7 @@ class OutboxRelayCrashWindowIntegrationTest {
             assertThat(first).isEqualTo(RelayOutcome.PUBLISH_FAILED);
 
             Map<String, Object> afterFirst = jdbcTemplate.queryForMap(
-                    "SELECT publish_attempts, published_at, last_error FROM outbox_events WHERE aggregate_id = ?",
+                    "SELECT publish_attempts, published_at, last_error FROM outbox_events WHERE aggregate_id = ? AND event_type = 'OrderCreated'",
                     orderId.toString());
             assertThat(((Number) afterFirst.get("publish_attempts")).intValue()).isEqualTo(1);
             assertThat(afterFirst.get("published_at")).isNull();
@@ -295,7 +305,7 @@ class OutboxRelayCrashWindowIntegrationTest {
             assertThat(immediateRetry).isEqualTo(RelayOutcome.NOTHING_TO_CLAIM);
 
             Map<String, Object> stillOne = jdbcTemplate.queryForMap(
-                    "SELECT publish_attempts FROM outbox_events WHERE aggregate_id = ?", orderId.toString());
+                    "SELECT publish_attempts FROM outbox_events WHERE aggregate_id = ? AND event_type = 'OrderCreated'", orderId.toString());
             assertThat(((Number) stillOne.get("publish_attempts")).intValue()).isEqualTo(1);
 
             // Advance the injected clock past the backoff window — this, not elapsed wall-clock
@@ -306,7 +316,7 @@ class OutboxRelayCrashWindowIntegrationTest {
             assertThat(second).isEqualTo(RelayOutcome.PUBLISH_FAILED);
 
             Map<String, Object> afterSecond = jdbcTemplate.queryForMap(
-                    "SELECT publish_attempts, published_at FROM outbox_events WHERE aggregate_id = ?",
+                    "SELECT publish_attempts, published_at FROM outbox_events WHERE aggregate_id = ? AND event_type = 'OrderCreated'",
                     orderId.toString());
             assertThat(((Number) afterSecond.get("publish_attempts")).intValue()).isEqualTo(2);
             assertThat(afterSecond.get("published_at")).isNull();
@@ -330,7 +340,7 @@ class OutboxRelayCrashWindowIntegrationTest {
         assertThat(third).isEqualTo(RelayOutcome.PUBLISHED);
 
         Map<String, Object> afterThird = jdbcTemplate.queryForMap(
-                "SELECT publish_attempts, published_at FROM outbox_events WHERE aggregate_id = ?",
+                "SELECT publish_attempts, published_at FROM outbox_events WHERE aggregate_id = ? AND event_type = 'OrderCreated'",
                 orderId.toString());
         assertThat(afterThird.get("published_at")).isNotNull();
         // At least the 2 recorded failed attempts plus this successful one — exactly 3 only if the
@@ -379,7 +389,7 @@ class OutboxRelayCrashWindowIntegrationTest {
     private UUID createOrder(long amountCents) throws Exception {
         String responseJson = mockMvc.perform(MockMvcRequestBuilders.post("/orders")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(mapper.writeValueAsString(new CreateOrderRequest(amountCents))))
+                        .content(mapper.writeValueAsString(new CreateOrderRequest(amountCents, null, null))))
                 .andExpect(MockMvcResultMatchers.status().isCreated())
                 .andReturn()
                 .getResponse()

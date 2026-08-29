@@ -4,6 +4,7 @@ import com.eventforge.events.envelope.EventEnvelopeMapper;
 import com.eventforge.events.outbox.OutboxEventRow;
 import com.eventforge.events.outbox.OutboxWriter;
 import com.eventforge.events.trace.TraceContextCapture;
+import com.eventforge.order.saga.SagaOrchestrator;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
@@ -17,12 +18,19 @@ import org.springframework.transaction.annotation.Transactional;
  * one method, inside one {@code @Transactional} boundary — both commit together or neither does.
  * No distributed transaction, no two-phase commit; just one Postgres transaction covering both
  * writes (see docs/architecture.md and ADR-0010).
+ *
+ * <p>M3 extends the same transaction one step further: {@link SagaOrchestrator#startSaga} writes
+ * the {@code saga_instance} row and dispatches AuthorizePayment (sequence 2) in this SAME
+ * transaction — the order row, OrderCreated, the saga row, and AuthorizePayment all commit
+ * together or none do. See ADR-0014 for why colocating the orchestrator here is what makes this
+ * atomicity possible at all.
  */
 @Service
 public class OrderService {
 
     private final OrderRepository orderRepository;
     private final OutboxWriter outboxWriter;
+    private final SagaOrchestrator sagaOrchestrator;
 
     // Deliberately not an autowired Spring-managed ObjectMapper: Spring Boot 4's own
     // JacksonAutoConfiguration is Jackson-3-shaped (tools.jackson) and doesn't register a
@@ -30,13 +38,15 @@ public class OrderService {
     // same explicit mapper the event contract itself defines, not an ambient default.
     private final ObjectMapper objectMapper = EventEnvelopeMapper.create();
 
-    public OrderService(OrderRepository orderRepository, OutboxWriter outboxWriter) {
+    public OrderService(OrderRepository orderRepository, OutboxWriter outboxWriter, SagaOrchestrator sagaOrchestrator) {
         this.orderRepository = orderRepository;
         this.outboxWriter = outboxWriter;
+        this.sagaOrchestrator = sagaOrchestrator;
     }
 
     @Transactional
-    public Order createOrder(long amountCents, String inboundTraceparent, String inboundTracestate) {
+    public Order createOrder(
+            long amountCents, String sku, long quantity, String inboundTraceparent, String inboundTracestate) {
         UUID orderId = UUID.randomUUID();
         Instant now = Instant.now();
 
@@ -68,6 +78,8 @@ public class OrderService {
                 inboundTracestate,
                 payloadJson,
                 now));
+
+        sagaOrchestrator.startSaga(order, sku, quantity, eventId, inboundTraceparent, inboundTracestate);
 
         return order;
     }

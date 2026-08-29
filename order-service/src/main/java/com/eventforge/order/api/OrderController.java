@@ -34,7 +34,7 @@ public class OrderController {
             throw new IllegalArgumentException("amountCents must be positive");
         }
 
-        Order order = orderService.createOrder(request.amountCents(), traceparent, tracestate);
+        Order order = orderService.createOrder(request.amountCents(), request.sku(), request.quantity(), traceparent, tracestate);
 
         // The order+outbox transaction has now committed. This is the real seam trap T-worthy
         // fault-injection point exists for: a crash right here would leave a durable, unpublished

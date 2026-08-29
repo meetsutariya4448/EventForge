@@ -87,7 +87,7 @@ class OutboxAndRelayIntegrationTest extends AbstractPostgresKafkaIntegrationTest
         assertThat(((Number) orderRow.get("amount_cents")).longValue()).isEqualTo(3999L);
 
         Map<String, Object> outboxRow = jdbcTemplate.queryForMap(
-                "SELECT event_type, traceparent, published_at FROM outbox_events WHERE aggregate_id = ?",
+                "SELECT event_type, traceparent, published_at FROM outbox_events WHERE aggregate_id = ? AND event_type = 'OrderCreated'",
                 orderId.toString());
         assertThat(outboxRow.get("event_type")).isEqualTo("OrderCreated");
         assertThat(TraceContextCapture.isValid((String) outboxRow.get("traceparent"))).isTrue();
@@ -101,12 +101,12 @@ class OutboxAndRelayIntegrationTest extends AbstractPostgresKafkaIntegrationTest
         UUID orderId = createOrder(1000, inbound, "eventforge=upstream");
 
         String storedTraceparent = jdbcTemplate.queryForObject(
-                "SELECT traceparent FROM outbox_events WHERE aggregate_id = ?", String.class, orderId.toString());
+                "SELECT traceparent FROM outbox_events WHERE aggregate_id = ? AND event_type = 'OrderCreated'", String.class, orderId.toString());
         assertThat(storedTraceparent).startsWith("00-4bf92f3577b34da6a3ce929d0e0e4736-");
         assertThat(storedTraceparent).doesNotContain("00f067aa0ba902b7");
 
         String storedTracestate = jdbcTemplate.queryForObject(
-                "SELECT tracestate FROM outbox_events WHERE aggregate_id = ?", String.class, orderId.toString());
+                "SELECT tracestate FROM outbox_events WHERE aggregate_id = ? AND event_type = 'OrderCreated'", String.class, orderId.toString());
         assertThat(storedTracestate).isEqualTo("eventforge=upstream");
     }
 
@@ -119,7 +119,7 @@ class OutboxAndRelayIntegrationTest extends AbstractPostgresKafkaIntegrationTest
         assertThat(outcome).isEqualTo(RelayOutcome.PUBLISHED);
 
         Timestamp publishedAt = jdbcTemplate.queryForObject(
-                "SELECT published_at FROM outbox_events WHERE aggregate_id = ?", Timestamp.class, orderId.toString());
+                "SELECT published_at FROM outbox_events WHERE aggregate_id = ? AND event_type = 'OrderCreated'", Timestamp.class, orderId.toString());
         assertThat(publishedAt).isNotNull();
 
         ConsumerRecord<String, String> record = consumeOneByKey("orders.events", orderId.toString(), Duration.ofSeconds(20));
@@ -148,14 +148,14 @@ class OutboxAndRelayIntegrationTest extends AbstractPostgresKafkaIntegrationTest
                 .hasMessageContaining("simulated crash");
 
         Timestamp publishedAt = jdbcTemplate.queryForObject(
-                "SELECT published_at FROM outbox_events WHERE aggregate_id = ?", Timestamp.class, orderId.toString());
+                "SELECT published_at FROM outbox_events WHERE aggregate_id = ? AND event_type = 'OrderCreated'", Timestamp.class, orderId.toString());
         assertThat(publishedAt).isNull();
     }
 
     private UUID createOrder(long amountCents, String traceparent, String tracestate) throws Exception {
         MockHttpServletRequestBuilder requestBuilder = MockMvcRequestBuilders.post("/orders")
                 .contentType(MediaType.APPLICATION_JSON)
-                .content(mapper.writeValueAsString(new CreateOrderRequest(amountCents)));
+                .content(mapper.writeValueAsString(new CreateOrderRequest(amountCents, null, null)));
         if (traceparent != null) {
             requestBuilder = requestBuilder.header("traceparent", traceparent);
         }
