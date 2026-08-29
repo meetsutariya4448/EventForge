@@ -69,20 +69,37 @@ publishes.
 | 7 | **Concurrent redelivery** (a generalization of "rebalance mid-processing": two consumer paths racing to process the same event at once, whatever triggers the race) | Kafka consumer group rebalance protocol, or any other source of concurrent delivery of the same record | Same as #6 — `processed_events`' uniqueness constraint (enforced by Postgres itself under real contention, not by application-level locking) doesn't care which caller attempted the insert first, only that exactly one of them wins | **Proven** | `ConcurrentDuplicateDeliveryIntegrationTest` — 16 threads released simultaneously via a `CountDownLatch` against the same event, real database contention, exactly one business effect. This proves the property row 7 actually depends on (the dedupe insert is safe under real concurrent contention, not just sequential retries) directly, by concurrent invocation rather than by literally triggering a Kafka partition rebalance — a rebalance-triggered variant (two live consumer group members actually racing via a real rebalance) was not built; stated here rather than left implicit, since the mechanism proven is a deliberately narrower stand-in for the one named. |
 | 8 | **Broker-side replication/leader-failover duplicate** — under `acks=all` with `replication.factor > 1`, a leader failover mid-produce can, in rare cases, result in a message being counted as delivered twice across the old and new leader. | Kafka broker replication protocol | Not applicable to EventForge's current topology | N/A | Every topic in this project is `replication.factor=1` (single-broker KRaft, both in Testcontainers and `docker-compose.yml`). Recorded so it isn't rediscovered as a surprise if replication factor ever increases past 1. |
 | 9 | **Dedupe protection itself expiring** — not a new way to *produce* a duplicate, but a way for an *existing* duplicate (any of rows 2/3/6/7) to slip past the layer that's supposed to absorb it: if the relevant `(consumer_group, event_id)` row in `processed_events` has ever been purged, a redelivered/re-relayed copy of that event is treated as first-time and reprocessed for real. | Any future `processed_events` archival/retention mechanism (none exists yet — see ADR-0012 and ADR-0004's T3 posture) | For `payment-service`/`inventory-service`: a second, local `UNIQUE (order_id)` constraint on the business table itself — degraded to a loud DB conflict, not silent. For `notification-service`: **nothing** — deliberately, so the gap is visible rather than papered over (see `SentNotification`'s Javadoc). | **Predicted** | No retention policy is implemented yet, so this can't be triggered without simulating row deletion directly — not done this milestone. ADR-0012 states the failure mode precisely without a test forcing it; a real test needs a real retention implementation to test against first. |
+| 10 | **Orchestrator command redispatch after timeout** (M3) — a genuinely *different* mechanism from rows 2/3/6/7: the saga's timeout sweep redispatches `RefundPayment` under a brand-new `event_id` when the original attempt's response never arrived in time. This is not a redelivery of the same message — event-level dedupe (row 6's mechanism) cannot see it at all, since the `event_id` is different every time. | `SagaOrchestrator`'s timeout sweep (`handleRefundPaymentTimeout`, ADR-0015) | The business-level safety net (`payment-service` checking `Payment.status` before refunding — layer 2 of ADR-0016's three-layer design) | **Predicted** | No test in this repo redispatches a command and then lets the ORIGINAL attempt also succeed — every required M3 test scenario either never redispatches, or redispatches against a dead consumer that never processes any attempt (see ADR-0016's "Consequences" section, which states this same gap in its own words). The production code path exists and is reasoned through; the redispatch-lands-on-an-already-answered-order interleaving specifically is not exercised by a test. |
+| 11 | **Saga fact arriving out of state** — a fact (e.g. `PaymentAuthorized`, `PaymentRefunded`) arrives when the saga is no longer in the state that fact would normally advance — for instance, a second answer to a redispatched command, after the first answer already moved the saga on. A *different* `event_id` each time, same as row 10, so event-level dedupe alone cannot catch it. | Any saga fact, whenever more than one arrives for a step the saga has already left | `SagaOrchestrator`'s per-handler state guard (every `handleX` method checks the saga is in the exact state it expects before acting — layer 3 of ADR-0016) | **Proven** | `SagaOrchestrationIntegrationTest#aFactArrivingOutOfStateIsACleanNoOpNotADoubleTransition` — a second `PaymentAuthorized` fact for an order already past `AWAITING_PAYMENT` is ignored: state unchanged, no second `ReserveInventory` dispatch. |
 
-## Completion check — as of the end of M2
+## Completion check — as of the end of M3
 
-**Rows 1–8 are all Proven or N/A. Row 9 is still Predicted, and that's stated here plainly rather
-than left to be noticed.** Row 9 ("dedupe protection itself expiring") is a real mechanism ADR-0012
-names precisely, but it depends on a `processed_events` retention/archival implementation that does
-not exist yet (T3 remains open) — there is nothing to test against until that implementation exists.
-This is not a gap in M2's testing discipline; it is a mechanism M2's own reasoning surfaced (via
-ADR-0012) that a future milestone with real retention logic must close, at which point it gets its
-own test reference here, not a Status edit alone.
+**Rows 1–8 and 11 are Proven or N/A. Rows 9 and 10 are still Predicted, and that's stated here
+plainly rather than left to be noticed.** Row 9 ("dedupe protection itself expiring") still depends
+on a `processed_events` retention/archival implementation that does not exist yet (T3 remains open)
+— unchanged from M2. Row 10 ("orchestrator command redispatch after timeout") is a real mechanism
+M3's own compensation design surfaces (ADR-0016 names it directly), reasoned through and handled in
+production code, but not exercised by a test in this milestone — every required scenario either
+never redispatches or redispatches against a permanently-dead consumer, neither of which reaches
+the specific "redispatch, then the original attempt ALSO lands" interleaving. Both rows are honest
+gaps, not silently-dropped scope.
 
 Row 7 is marked Proven, but with a stated caveat in its own cell: the test that proves it exercises
 concurrent contention directly rather than a literally-triggered Kafka rebalance. That distinction
 is recorded there rather than smoothed over, consistent with this document's purpose.
+
+## What M3 actually built
+
+- The saga's own two mechanisms (rows 10-11) sit ON TOP of M2's dedupe primitive, not as a
+  replacement for it — every saga command/fact still goes through the same `processed_events`
+  event-level check first (row 6's mechanism, unchanged). Rows 10-11 exist because a *retried*
+  command carries a genuinely different `event_id`, a shape M2's dedupe was never meant to catch
+  and ADR-0016 names as a second, independent kind of duplicate.
+- `ConcurrentInventoryReservationIntegrationTest` (inventory-service) proves real row-locked
+  contention distinct from anything in this table: not a duplicate at all, but concurrent legitimate
+  requests correctly serialized against scarce shared state (constitution item 8f) — recorded here
+  for completeness even though it isn't a taxonomy row, since it's the other kind of concurrency
+  claim M3 makes.
 
 ## What M2 actually built
 
