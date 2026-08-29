@@ -30,6 +30,13 @@ public class Payment {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    // This order's next free outbox_events.aggregate_sequence (M3): PaymentAuthorized always
+    // consumes sequence 1 in the same call that creates this row, so this starts at 2 and is
+    // allocated from for every write afterward (e.g. PaymentRefunded), however many separate
+    // transactions those turn out to span.
+    @Column(name = "next_sequence", nullable = false)
+    private long nextSequence;
+
     protected Payment() {}
 
     public Payment(UUID paymentId, String orderId, long amountCents, String status, Instant createdAt, Instant updatedAt) {
@@ -39,6 +46,7 @@ public class Payment {
         this.status = status;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
+        this.nextSequence = 2L;
     }
 
     public UUID getPaymentId() {
@@ -63,5 +71,15 @@ public class Payment {
 
     public Instant getUpdatedAt() {
         return updatedAt;
+    }
+
+    public void markRefunded(Instant now) {
+        this.status = "REFUNDED";
+        this.updatedAt = now;
+    }
+
+    /** Returns this order's next free {@code aggregate_sequence} and reserves it. */
+    public long allocateNextSequence() {
+        return nextSequence++;
     }
 }

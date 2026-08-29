@@ -19,12 +19,15 @@ import org.springframework.stereotype.Component;
  * {@code spring.kafka.listener.ack-mode=MANUAL_IMMEDIATE}, asserted against the real factory by
  * {@code ConsumerManualAckConfigTest}, not just trusted from YAML.
  *
+ * <p>M3: this now dispatches on {@code event_type} rather than reacting to {@code OrderCreated}
+ * directly — the orchestrator (order-service) explicitly commands {@code AuthorizePayment} and
+ * {@code RefundPayment}; payment-service no longer self-triggers off the raw domain fact, which is
+ * exactly the choreographed-vs-orchestrated distinction constitution item 1 draws. Still one
+ * listener on {@code orders.events} (the topic every order-service-authored message multiplexes
+ * onto), same as before.
+ *
  * <p>{@link FaultInjectionPoint#AFTER_BUSINESS_COMMIT_BEFORE_OFFSET_ACK} fires here, between the
- * business transaction committing and the offset actually being acknowledged — the exact seam M0
- * built and M1 never had a consumer to call it from. A crash here means the business effect (and
- * any next outbox event) is already durably committed, but Kafka still thinks the offset is
- * uncommitted — the broker redelivers the same record, and {@code processedEventStore}'s dedupe
- * check absorbs it as a clean no-op on the next attempt.
+ * business transaction committing and the offset actually being acknowledged.
  */
 @Component
 public class PaymentEventListener {
@@ -41,13 +44,17 @@ public class PaymentEventListener {
     @KafkaListener(id = "payment-order-events", topics = "orders.events", groupId = PaymentAuthorizationService.CONSUMER_GROUP)
     public void onOrderEvent(ConsumerRecord<String, String> record, Acknowledgment ack) throws Exception {
         EventEnvelope envelope = mapper.readValue(record.value(), EventEnvelope.class);
-        if (!"OrderCreated".equals(envelope.eventType())) {
-            ack.acknowledge();
-            return;
-        }
 
-        paymentAuthorizationService.handleOrderCreated(
-                envelope, headerValue(record, "traceparent"), headerValue(record, "tracestate"));
+        switch (envelope.eventType()) {
+            case "AuthorizePayment" -> paymentAuthorizationService.handleAuthorizePayment(
+                    envelope, headerValue(record, "traceparent"), headerValue(record, "tracestate"));
+            case "RefundPayment" -> paymentAuthorizationService.handleRefundPayment(
+                    envelope, headerValue(record, "traceparent"), headerValue(record, "tracestate"));
+            default -> {
+                ack.acknowledge();
+                return;
+            }
+        }
 
         faultInjector.inject(FaultInjectionPoint.AFTER_BUSINESS_COMMIT_BEFORE_OFFSET_ACK);
 

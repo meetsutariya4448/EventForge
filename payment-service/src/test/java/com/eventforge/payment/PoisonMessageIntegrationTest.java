@@ -71,7 +71,7 @@ class PoisonMessageIntegrationTest extends AbstractPostgresKafkaIntegrationTest 
         UUID goodEventId = UUID.randomUUID();
         EventEnvelope goodEnvelope = new EventEnvelope(
                 goodEventId,
-                "OrderCreated",
+                "AuthorizePayment",
                 1,
                 orderId,
                 UUID.randomUUID(),

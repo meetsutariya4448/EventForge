@@ -114,7 +114,7 @@ class CrashAfterCommitBeforeAckIntegrationTest extends AbstractPostgresKafkaInte
             throws Exception {
         EventEnvelope envelope = new EventEnvelope(
                 eventId,
-                "OrderCreated",
+                "AuthorizePayment",
                 1,
                 orderId,
                 UUID.randomUUID(),

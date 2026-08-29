@@ -87,7 +87,7 @@ class DuplicateDeliveryIntegrationTest extends AbstractPostgresKafkaIntegrationT
             throws Exception {
         EventEnvelope envelope = new EventEnvelope(
                 eventId,
-                "OrderCreated",
+                "AuthorizePayment",
                 1,
                 orderId,
                 UUID.randomUUID(),

@@ -99,7 +99,7 @@ class ConcurrentDuplicateDeliveryIntegrationTest extends AbstractPostgresKafkaIn
     private String buildOrderCreatedJson(String orderId, UUID eventId, long amountCents) throws Exception {
         EventEnvelope envelope = new EventEnvelope(
                 eventId,
-                "OrderCreated",
+                "AuthorizePayment",
                 1,
                 orderId,
                 UUID.randomUUID(),

@@ -26,7 +26,7 @@ import org.springframework.test.context.DynamicPropertySource;
 /**
  * ITEM 4D — THE ONE THAT MATTERS.
  *
- * <p>Every other M2 test proves a component works in isolation: the dedupe primitive, the
+ * <p>Every other M2/M3 test proves a component works in isolation: the dedupe primitive, the
  * listener, the fault-injection seam. This one proves the SYSTEM has an end-to-end guarantee. It
  * reuses the real M1 relay mechanism ({@link OutboxRelayWorker}, reconfigured here to target
  * {@code orders.events} — the identical mechanism a real order-service uses, since the relay is
@@ -76,7 +76,7 @@ class RelayProducedDuplicateEndToEndTest extends AbstractPostgresKafkaIntegratio
 
         String orderId = "relay-duplicate-e2e-" + UUID.randomUUID();
         UUID eventId = UUID.randomUUID();
-        insertSyntheticOrderCreatedRow(orderId, eventId, 3300);
+        insertSyntheticAuthorizePaymentRow(orderId, eventId, 3300);
 
         AtomicBoolean fired = new AtomicBoolean(false);
         ((ConfigurableFaultInjector) faultInjector)
@@ -93,7 +93,7 @@ class RelayProducedDuplicateEndToEndTest extends AbstractPostgresKafkaIntegratio
         assertThatThrownBy(() -> relayWorker.relayNextEvent()).isInstanceOf(IllegalStateException.class);
 
         // "Restart": the row is still unpublished, so it gets picked up and published again —
-        // for real, a second time. Kafka now genuinely holds two copies of this OrderCreated.
+        // for real, a second time. Kafka now genuinely holds two copies of this AuthorizePayment.
         RelayOutcome secondAttempt = relayWorker.relayNextEvent();
         assertThat(secondAttempt).isEqualTo(RelayOutcome.PUBLISHED);
 
@@ -154,7 +154,7 @@ class RelayProducedDuplicateEndToEndTest extends AbstractPostgresKafkaIntegratio
     // that could never happen for real. A distinctly out-of-band sequence sidesteps that.
     private static final long SYNTHETIC_ROW_AGGREGATE_SEQUENCE = -1L;
 
-    private void insertSyntheticOrderCreatedRow(String orderId, UUID eventId, long amountCents) {
+    private void insertSyntheticAuthorizePaymentRow(String orderId, UUID eventId, long amountCents) {
         jdbcTemplate.update(
                 """
                 INSERT INTO outbox_events (
@@ -167,7 +167,7 @@ class RelayProducedDuplicateEndToEndTest extends AbstractPostgresKafkaIntegratio
                 "Order",
                 orderId,
                 SYNTHETIC_ROW_AGGREGATE_SEQUENCE,
-                "OrderCreated",
+                "AuthorizePayment",
                 1,
                 eventId,
                 null,
