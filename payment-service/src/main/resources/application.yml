@@ -13,6 +13,30 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        enable.idempotence: true
+        acks: all
+    consumer:
+      auto-offset-reset: earliest
+      # Manual ack only, never auto-commit (constitution item 2) - asserted against the real
+      # factory by ConsumerManualAckConfigTest, not just trusted from this file.
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      ack-mode: manual_immediate
+  jpa:
+    hibernate:
+      # No ddl-auto=update, ever (R3). "validate" fails fast if the entity mapping and the
+      # Flyway-migrated schema ever drift, rather than silently doing nothing or doing more.
+      ddl-auto: validate
+    open-in-view: false
+
+eventforge:
+  outbox:
+    relay:
+      enabled: true
+      topic: payments.events
 
 management:
   endpoints:
