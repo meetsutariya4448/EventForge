@@ -13,6 +13,20 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
+    consumer:
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      ack-mode: manual_immediate
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+# No eventforge.outbox.relay.* here: inventory-service has nothing to publish yet in M2
+# (reservation semantics are M3) - it stays consumer-only.
 
 management:
   endpoints:
