@@ -55,6 +55,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
+import org.testcontainers.utility.DockerImageName;
 
 /**
  * The headline M1 proof: exercises the M0 fault-injection harness and the M1 relay against real
@@ -77,9 +78,18 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 @Import({FaultInjectionTestConfiguration.class, OutboxRelayCrashWindowIntegrationTest.ClockConfig.class})
 class OutboxRelayCrashWindowIntegrationTest {
 
+    // Same digest as docker/docker-compose.yml; see AbstractPostgresKafkaIntegrationTest's comment
+    // for why asCompatibleSubstituteFor("postgres") is required, not optional.
+    private static final DockerImageName POSTGRES_IMAGE = DockerImageName.parse(
+                    "postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685")
+            .asCompatibleSubstituteFor("postgres");
+
+    // Explicit "postgres" name required — see AbstractPostgresKafkaIntegrationTest's comment:
+    // Spring Boot's own @ServiceConnection name deduction throws on a digest-suffixed image name
+    // unless told the name explicitly, independent of Testcontainers' own substitution above.
     @Container
-    @ServiceConnection
-    static final PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:16-alpine");
+    @ServiceConnection("postgres")
+    static final PostgreSQLContainer postgres = new PostgreSQLContainer(POSTGRES_IMAGE);
 
     @Container
     @ServiceConnection

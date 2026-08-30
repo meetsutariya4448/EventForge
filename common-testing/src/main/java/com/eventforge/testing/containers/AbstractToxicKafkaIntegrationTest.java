@@ -12,6 +12,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.toxiproxy.ToxiproxyContainer;
+import org.testcontainers.utility.DockerImageName;
 
 /**
  * Like {@link AbstractPostgresKafkaIntegrationTest}, but Kafka traffic is routed through a real
@@ -41,9 +42,18 @@ public abstract class AbstractToxicKafkaIntegrationTest {
 
     protected static final Network network = Network.newNetwork();
 
+    // Same digest as docker/docker-compose.yml and AbstractPostgresKafkaIntegrationTest; see that
+    // class's comment for why asCompatibleSubstituteFor("postgres") is required, not optional.
+    private static final DockerImageName POSTGRES_IMAGE = DockerImageName.parse(
+                    "postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685")
+            .asCompatibleSubstituteFor("postgres");
+
+    // Explicit "postgres" name required — see AbstractPostgresKafkaIntegrationTest's comment:
+    // Spring Boot's own @ServiceConnection name deduction throws on a digest-suffixed image name
+    // unless told the name explicitly, independent of Testcontainers' own substitution above.
     @Container
-    @ServiceConnection
-    protected static final PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:16-alpine");
+    @ServiceConnection("postgres")
+    protected static final PostgreSQLContainer postgres = new PostgreSQLContainer(POSTGRES_IMAGE);
 
     // Not @Container-managed: its startup must happen, in order, before kafka's — see the class
     // Javadoc. Still cleaned up at JVM exit via Testcontainers' Ryuk reaper like any other

@@ -28,6 +28,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
+import org.testcontainers.utility.DockerImageName;
 
 /**
  * Constitution M4 item 6: "an automated assertion, not a screenshot." Issues ONE real HTTP request
@@ -62,17 +63,25 @@ import org.testcontainers.kafka.KafkaContainer;
 @Testcontainers
 class TraceContinuityIntegrationTest {
 
+    // Same digest as docker/docker-compose.yml; see common-testing's
+    // AbstractPostgresKafkaIntegrationTest for why asCompatibleSubstituteFor("postgres") is
+    // required, not optional — Testcontainers otherwise refuses to recognize a digest-suffixed
+    // reference as a substitute for "postgres" and throws IllegalStateException at startup.
+    private static final DockerImageName POSTGRES_IMAGE = DockerImageName.parse(
+                    "postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685")
+            .asCompatibleSubstituteFor("postgres");
+
     @Container
     static final KafkaContainer kafka = new KafkaContainer("apache/kafka:4.3.1");
 
     @Container
-    static final PostgreSQLContainer<?> orderDb = new PostgreSQLContainer<>("postgres:16-alpine");
+    static final PostgreSQLContainer<?> orderDb = new PostgreSQLContainer<>(POSTGRES_IMAGE);
 
     @Container
-    static final PostgreSQLContainer<?> paymentDb = new PostgreSQLContainer<>("postgres:16-alpine");
+    static final PostgreSQLContainer<?> paymentDb = new PostgreSQLContainer<>(POSTGRES_IMAGE);
 
     @Container
-    static final PostgreSQLContainer<?> inventoryDb = new PostgreSQLContainer<>("postgres:16-alpine");
+    static final PostgreSQLContainer<?> inventoryDb = new PostgreSQLContainer<>(POSTGRES_IMAGE);
 
     private static ConfigurableApplicationContext orderCtx;
     private static ConfigurableApplicationContext paymentCtx;
