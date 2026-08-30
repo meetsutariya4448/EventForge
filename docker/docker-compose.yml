@@ -52,8 +52,14 @@ services:
       retries: 20
       start_period: 20s
 
+  # Pinned by digest, not just tag: unlike apache/kafka:4.3.1 and jaegertracing/all-in-one:1.62.0
+  # above (both immutable version tags), `postgres:16-alpine` is a mutable tag Docker Hub can and
+  # does repush with security patches — a clean clone months from now is not guaranteed to pull
+  # the same bytes tested today without the digest. Re-pin by re-running
+  # `docker inspect --format='{{index .RepoDigests 0}}' postgres:16-alpine` after a deliberate,
+  # verified upgrade; do not let this drift silently.
   order-db:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     container_name: eventforge-order-db
     ports:
       - "5433:5432"
@@ -70,7 +76,7 @@ services:
       retries: 10
 
   payment-db:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     container_name: eventforge-payment-db
     ports:
       - "5434:5432"
@@ -87,7 +93,7 @@ services:
       retries: 10
 
   inventory-db:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     container_name: eventforge-inventory-db
     ports:
       - "5435:5432"
@@ -104,7 +110,7 @@ services:
       retries: 10
 
   notification-db:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     container_name: eventforge-notification-db
     ports:
       - "5436:5432"
