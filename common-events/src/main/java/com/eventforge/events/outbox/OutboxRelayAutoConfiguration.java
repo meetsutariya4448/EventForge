@@ -1,6 +1,7 @@
 package com.eventforge.events.outbox;
 
 import com.eventforge.events.fault.FaultInjector;
+import com.eventforge.events.tracing.EventForgeTracer;
 import java.time.Clock;
 import java.time.Duration;
 import org.apache.kafka.clients.admin.NewTopic;
@@ -44,12 +45,14 @@ public class OutboxRelayAutoConfiguration {
             JdbcTemplate jdbcTemplate,
             KafkaTemplate<String, String> kafkaTemplate,
             FaultInjector faultInjector,
+            EventForgeTracer tracer,
             Clock clock,
             OutboxRelayProperties properties) {
         return new OutboxRelayWorker(
                 jdbcTemplate,
                 kafkaTemplate,
                 faultInjector,
+                tracer,
                 properties.topic(),
                 clock,
                 Duration.ofMillis(properties.retryBackoffMs()),

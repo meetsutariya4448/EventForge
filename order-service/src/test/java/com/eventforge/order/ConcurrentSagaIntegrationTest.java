@@ -79,7 +79,7 @@ class ConcurrentSagaIntegrationTest extends AbstractPostgresKafkaIntegrationTest
                 long amount = 1000 + i;
                 starters.add(() -> {
                     startingGate.await();
-                    return orderService.createOrder(amount, SHARED_SKU, 1L, null, null).getOrderId();
+                    return orderService.createOrder(amount, SHARED_SKU, 1L).getOrderId();
                 });
             }
             List<Future<UUID>> futures = new ArrayList<>();

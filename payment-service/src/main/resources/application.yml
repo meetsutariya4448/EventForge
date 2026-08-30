@@ -37,6 +37,20 @@ eventforge:
     relay:
       enabled: true
       topic: payments.events
+  # M4: OTLP gRPC receiver Jaeger exposes (docker-compose's jaeger service) - see ADR-0017/0018.
+  # Sampling probability 1.0 is a deliberate policy for this project, not a default left untouched
+  # - see ADR-0019.
+  tracing:
+    otlp-endpoint: http://localhost:4317
+    sampling-probability: 1.0
+
+# M4 item 7: structured JSON logs carrying trace_id/span_id on every line - populated into MDC by
+# EventForgeTracer/SpanHandle whenever a span is open, picked up automatically by Spring Boot's
+# built-in ECS formatter (no Micrometer Tracing bridge needed for this part).
+logging:
+  structured:
+    format:
+      console: ecs
 
 management:
   endpoints:

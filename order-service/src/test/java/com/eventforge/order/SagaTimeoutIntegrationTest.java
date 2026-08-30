@@ -96,7 +96,7 @@ class SagaTimeoutIntegrationTest extends AbstractPostgresKafkaIntegrationTest {
     @Test
     void sagaStrandedByADeadInventoryConsumerEventuallyReachesATerminalStateAfterRestart() throws Exception {
         drainAllPending();
-        Order order = orderService.createOrder(3000, "sku-timeout", 1L, null, null);
+        Order order = orderService.createOrder(3000, "sku-timeout", 1L);
         UUID orderId = order.getOrderId();
         drainAllPending();
 
@@ -134,7 +134,7 @@ class SagaTimeoutIntegrationTest extends AbstractPostgresKafkaIntegrationTest {
     @Test
     void permanentCompensationFailureReachesATerminalStateWithAnAlertAndNoInfiniteLoop() throws Exception {
         drainAllPending();
-        Order order = orderService.createOrder(1800, "sku-perm-fail", 1L, null, null);
+        Order order = orderService.createOrder(1800, "sku-perm-fail", 1L);
         UUID orderId = order.getOrderId();
         drainAllPending();
 

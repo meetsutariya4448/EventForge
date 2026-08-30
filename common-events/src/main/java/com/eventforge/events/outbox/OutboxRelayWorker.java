@@ -4,9 +4,10 @@ import com.eventforge.events.envelope.EventEnvelope;
 import com.eventforge.events.envelope.EventEnvelopeMapper;
 import com.eventforge.events.fault.FaultInjectionPoint;
 import com.eventforge.events.fault.FaultInjector;
+import com.eventforge.events.tracing.EventForgeTracer;
+import com.eventforge.events.tracing.SpanHandle;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.nio.charset.StandardCharsets;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -88,6 +89,7 @@ public class OutboxRelayWorker {
     private final JdbcTemplate jdbcTemplate;
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final FaultInjector faultInjector;
+    private final EventForgeTracer tracer;
     private final String topic;
     private final Clock clock;
     private final Duration retryBackoff;
@@ -98,6 +100,7 @@ public class OutboxRelayWorker {
             JdbcTemplate jdbcTemplate,
             KafkaTemplate<String, String> kafkaTemplate,
             FaultInjector faultInjector,
+            EventForgeTracer tracer,
             String topic,
             Clock clock,
             Duration retryBackoff,
@@ -105,6 +108,7 @@ public class OutboxRelayWorker {
         this.jdbcTemplate = jdbcTemplate;
         this.kafkaTemplate = kafkaTemplate;
         this.faultInjector = faultInjector;
+        this.tracer = tracer;
         this.topic = topic;
         this.clock = clock;
         this.retryBackoff = retryBackoff;
@@ -139,39 +143,46 @@ public class OutboxRelayWorker {
         }
 
         ProducerRecord<String, String> record = new ProducerRecord<>(topic, event.aggregateId(), value);
-        // M4: this copies the stored traceparent/tracestate verbatim into Kafka headers, which is
-        // correct for M1 — there is no tracer here to ask. Once OpenTelemetry lands (M4), this must
-        // become extract -> start a child span for "relay publish" -> inject, or the relay stays
-        // invisible in the trace and the consumer ends up a sibling of the original HTTP span
-        // instead of its descendant. The stored column format (plain strings) does not change.
-        if (event.traceparent() != null) {
-            record.headers().add("traceparent", event.traceparent().getBytes(StandardCharsets.UTF_8));
-        }
-        if (event.tracestate() != null) {
-            record.headers().add("tracestate", event.tracestate().getBytes(StandardCharsets.UTF_8));
-        }
 
-        try {
-            kafkaTemplate.send(record).get(kafkaSendTimeout.toMillis(), TimeUnit.MILLISECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            recordFailedAttempt(event.eventId(), now, e);
-            return RelayOutcome.PUBLISH_FAILED;
-        } catch (Exception e) {
-            // A real, recoverable publish failure (broker down, timeout, ...). This commits: a
-            // failed attempt is durable information worth keeping, and the row simply stays
-            // eligible for another try once retryBackoff elapses (see the claim query above).
-            recordFailedAttempt(event.eventId(), now, e);
-            return RelayOutcome.PUBLISH_FAILED;
-        }
+        // Constitution M4 item 3, the part almost everyone gets wrong: NOT a verbatim header copy.
+        // Extract the context STORED on this row (never the relay's own polling-loop context —
+        // trap T5), start a CHILD span representing this specific publish, and inject THAT child's
+        // context into the outgoing record. A verbatim copy would leave the relay invisible in the
+        // trace and make the consumer come out as a sibling of the original write's span instead
+        // of its descendant — see ADR-0005's M4 note and ADR-0017. Proven by
+        // RelayPublishSpanIntegrationTest's parent-child assertion, not just eyeballed in a UI.
+        // The event type rides in the span name (not just an attribute) so two rows published to
+        // the SAME topic under the SAME parent span (e.g. OrderCreated and AuthorizePayment, both
+        // written inside the same HTTP request) remain distinguishable at a glance in the trace
+        // UI and in code that walks the span tree by name.
+        String spanName = "relay.publish " + topic + " " + event.eventType();
+        try (SpanHandle relaySpan = tracer.startRelayPublishSpan(spanName, event.traceparent(), event.tracestate())) {
+            tracer.injectCurrentContextIntoKafkaHeaders(record.headers());
 
-        // The seam a real crash between "Kafka has the message" and "we recorded that fact"
-        // exercises. Deliberately NOT caught: a crash here must roll back the whole transaction —
-        // claim included — so publish_attempts does not increment and the row is republished,
-        // unmodified, on the very next poll: a genuine, expected DUPLICATE. This is exactly the
-        // scenario M2's idempotent consumers (via processed_events) exist to absorb; nothing on the
-        // relay's side is supposed to prevent it.
-        faultInjector.inject(FaultInjectionPoint.AFTER_KAFKA_PUBLISH_BEFORE_MARK_PUBLISHED);
+            try {
+                kafkaTemplate.send(record).get(kafkaSendTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                relaySpan.recordException(e);
+                recordFailedAttempt(event.eventId(), now, e);
+                return RelayOutcome.PUBLISH_FAILED;
+            } catch (Exception e) {
+                // A real, recoverable publish failure (broker down, timeout, ...). This commits: a
+                // failed attempt is durable information worth keeping, and the row simply stays
+                // eligible for another try once retryBackoff elapses (see the claim query above).
+                relaySpan.recordException(e);
+                recordFailedAttempt(event.eventId(), now, e);
+                return RelayOutcome.PUBLISH_FAILED;
+            }
+
+            // The seam a real crash between "Kafka has the message" and "we recorded that fact"
+            // exercises. Deliberately NOT caught: a crash here must roll back the whole transaction
+            // — claim included — so publish_attempts does not increment and the row is republished,
+            // unmodified, on the very next poll: a genuine, expected DUPLICATE. This is exactly the
+            // scenario M2's idempotent consumers (via processed_events) exist to absorb; nothing on
+            // the relay's side is supposed to prevent it.
+            faultInjector.inject(FaultInjectionPoint.AFTER_KAFKA_PUBLISH_BEFORE_MARK_PUBLISHED);
+        }
 
         markPublished(event.eventId(), now);
         return RelayOutcome.PUBLISHED;

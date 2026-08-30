@@ -6,13 +6,15 @@ import com.eventforge.events.envelope.EventEnvelope;
 import com.eventforge.events.envelope.EventEnvelopeMapper;
 import com.eventforge.events.outbox.OutboxEventRow;
 import com.eventforge.events.outbox.OutboxWriter;
-import com.eventforge.events.trace.TraceContextCapture;
+import com.eventforge.events.tracing.EventForgeTracer;
+import com.eventforge.events.tracing.SpanHandle;
 import com.eventforge.order.domain.Order;
 import com.eventforge.order.domain.OrderRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.opentelemetry.api.trace.SpanKind;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
@@ -40,6 +42,12 @@ import org.springframework.transaction.support.TransactionTemplate;
  * that also refuses to act unless the saga is in the exact state it expects, so a second copy of a
  * fact arriving under a *different* event_id (a sweep-triggered command redispatch, see
  * {@link #handleTimeout}) is still a clean no-op, not a double transition. See ADR-0016.
+ *
+ * <p>M4: every outbox write here calls {@link EventForgeTracer#captureCurrentContext()} rather
+ * than threading a {@code traceparent}/{@code tracestate} string through every method signature —
+ * the ACTIVE span is whatever {@link SagaEventListener} (for a fact) or {@link #handleTimeout}
+ * itself (for a clock-driven dispatch, which opens its own root span since there's no inbound
+ * message to continue) made current before calling in. See ADR-0017.
  */
 @Service
 public class SagaOrchestrator {
@@ -60,6 +68,7 @@ public class SagaOrchestrator {
     private final SagaProperties properties;
     private final Counter compensationFailedCounter;
     private final TransactionTemplate transactionTemplate;
+    private final EventForgeTracer tracer;
 
     // Same reasoning as every other service (ADR-0009): Spring Boot 4's own JacksonAutoConfiguration
     // doesn't register a com.fasterxml.jackson.databind.ObjectMapper bean.
@@ -74,7 +83,8 @@ public class SagaOrchestrator {
             Clock clock,
             SagaProperties properties,
             MeterRegistry meterRegistry,
-            PlatformTransactionManager transactionManager) {
+            PlatformTransactionManager transactionManager,
+            EventForgeTracer tracer) {
         this.sagaInstanceRepository = sagaInstanceRepository;
         this.sagaStepRepository = sagaStepRepository;
         this.orderRepository = orderRepository;
@@ -91,6 +101,7 @@ public class SagaOrchestrator {
         // real bug this project hit directly (see the changelog note on this class). Programmatic
         // transaction demarcation via TransactionTemplate has no proxy to bypass.
         this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.tracer = tracer;
     }
 
     /**
@@ -98,10 +109,11 @@ public class SagaOrchestrator {
      * inside the SAME transaction as the {@code orders} row and the {@code OrderCreated} outbox
      * write (sequence 1) — the saga row and the AuthorizePayment dispatch (sequence 2) commit
      * atomically with both, the one property a separate orchestrator service could not offer
-     * without reintroducing a dual-write (see ADR-0014).
+     * without reintroducing a dual-write (see ADR-0014). Also the same ACTIVE span (the HTTP
+     * server span {@code OrderController} opened) — {@link #dispatchAndAwait} captures it exactly
+     * like {@code OrderService.createOrder}'s own {@code OrderCreated} write did.
      */
-    public void startSaga(
-            Order order, String sku, long quantity, UUID orderCreatedEventId, String inboundTraceparent, String inboundTracestate) {
+    public void startSaga(Order order, String sku, long quantity, UUID orderCreatedEventId) {
         Instant now = clock.instant();
         UUID sagaId = UUID.randomUUID();
         Instant deadline = now.plusMillis(properties.authorizePaymentTimeoutMs());
@@ -125,16 +137,17 @@ public class SagaOrchestrator {
         saga = sagaInstanceRepository.save(saga);
 
         Map<String, Object> payload = Map.of("orderId", order.getOrderId().toString(), "amountCents", order.getAmountCents());
-        dispatchAndAwait(
-                saga, SagaEventTypes.AUTHORIZE_PAYMENT, orderCreatedEventId, inboundTraceparent, inboundTracestate, payload, now);
+        dispatchAndAwait(saga, SagaEventTypes.AUTHORIZE_PAYMENT, orderCreatedEventId, payload, now);
     }
 
     /**
      * Entry point for {@link com.eventforge.order.saga.SagaEventListener}: every fact published by
-     * a participant in response to a dispatched command arrives here.
+     * a participant in response to a dispatched command arrives here. Called from within the
+     * CONSUMER span the listener already opened around the Kafka record's headers — every outbox
+     * write below captures that same active context.
      */
     @Transactional
-    public ConsumerOutcome handleFact(EventEnvelope envelope, String inboundTraceparent, String inboundTracestate) {
+    public ConsumerOutcome handleFact(EventEnvelope envelope) {
         boolean isNew = processedEventStore.tryMarkProcessed(CONSUMER_GROUP, envelope.eventId(), envelope.aggregateId());
         if (!isNew) {
             return ConsumerOutcome.DUPLICATE;
@@ -149,18 +162,16 @@ public class SagaOrchestrator {
         SagaInstance saga = maybeSaga.get();
 
         switch (envelope.eventType()) {
-            case SagaEventTypes.PAYMENT_AUTHORIZED -> handlePaymentAuthorized(saga, envelope, inboundTraceparent, inboundTracestate);
-            case SagaEventTypes.INVENTORY_RESERVED -> handleInventoryReserved(saga, envelope, inboundTraceparent, inboundTracestate);
-            case SagaEventTypes.INVENTORY_RESERVATION_FAILED ->
-                    handleInventoryReservationFailed(saga, envelope, inboundTraceparent, inboundTracestate);
-            case SagaEventTypes.PAYMENT_REFUNDED -> handlePaymentRefunded(saga, envelope, inboundTraceparent, inboundTracestate);
+            case SagaEventTypes.PAYMENT_AUTHORIZED -> handlePaymentAuthorized(saga, envelope);
+            case SagaEventTypes.INVENTORY_RESERVED -> handleInventoryReserved(saga, envelope);
+            case SagaEventTypes.INVENTORY_RESERVATION_FAILED -> handleInventoryReservationFailed(saga, envelope);
+            case SagaEventTypes.PAYMENT_REFUNDED -> handlePaymentRefunded(saga, envelope);
             default -> log.warn("Unrecognized saga fact event type {} for order {}", envelope.eventType(), orderId);
         }
         return ConsumerOutcome.PROCESSED;
     }
 
-    private void handlePaymentAuthorized(
-            SagaInstance saga, EventEnvelope envelope, String inboundTraceparent, String inboundTracestate) {
+    private void handlePaymentAuthorized(SagaInstance saga, EventEnvelope envelope) {
         Instant now = clock.instant();
         if (saga.getState() != SagaState.AWAITING_PAYMENT) {
             log.info(
@@ -178,11 +189,10 @@ public class SagaOrchestrator {
 
         Map<String, Object> payload =
                 Map.of("orderId", saga.getOrderId().toString(), "sku", saga.getSku(), "quantity", saga.getQuantity());
-        dispatchAndAwait(saga, SagaEventTypes.RESERVE_INVENTORY, envelope.eventId(), inboundTraceparent, inboundTracestate, payload, now);
+        dispatchAndAwait(saga, SagaEventTypes.RESERVE_INVENTORY, envelope.eventId(), payload, now);
     }
 
-    private void handleInventoryReserved(
-            SagaInstance saga, EventEnvelope envelope, String inboundTraceparent, String inboundTracestate) {
+    private void handleInventoryReserved(SagaInstance saga, EventEnvelope envelope) {
         Instant now = clock.instant();
         if (saga.getState() != SagaState.AWAITING_INVENTORY) {
             log.info(
@@ -201,11 +211,10 @@ public class SagaOrchestrator {
         orderRepository.save(order);
 
         Map<String, Object> payload = Map.of("orderId", saga.getOrderId().toString());
-        fireTerminalEvent(saga, SagaEventTypes.ORDER_CONFIRMED, envelope.eventId(), inboundTraceparent, inboundTracestate, payload, now);
+        fireTerminalEvent(saga, SagaEventTypes.ORDER_CONFIRMED, envelope.eventId(), payload, now);
     }
 
-    private void handleInventoryReservationFailed(
-            SagaInstance saga, EventEnvelope envelope, String inboundTraceparent, String inboundTracestate) {
+    private void handleInventoryReservationFailed(SagaInstance saga, EventEnvelope envelope) {
         Instant now = clock.instant();
         if (saga.getState() != SagaState.AWAITING_INVENTORY) {
             log.info(
@@ -217,11 +226,10 @@ public class SagaOrchestrator {
         }
         String reason = envelope.payload().has("reason") ? envelope.payload().get("reason").asText() : "unspecified";
         failStep(saga, SagaEventTypes.RESERVE_INVENTORY, now, "InventoryReservationFailed: " + reason);
-        beginCompensation(saga, envelope.eventId(), inboundTraceparent, inboundTracestate, now);
+        beginCompensation(saga, envelope.eventId(), now);
     }
 
-    private void handlePaymentRefunded(
-            SagaInstance saga, EventEnvelope envelope, String inboundTraceparent, String inboundTracestate) {
+    private void handlePaymentRefunded(SagaInstance saga, EventEnvelope envelope) {
         Instant now = clock.instant();
         if (saga.getState() != SagaState.AWAITING_REFUND) {
             log.info(
@@ -241,17 +249,17 @@ public class SagaOrchestrator {
         orderRepository.save(order);
 
         Map<String, Object> payload = Map.of("orderId", saga.getOrderId().toString(), "reason", "inventory reservation failed");
-        fireTerminalEvent(saga, SagaEventTypes.ORDER_CANCELLED, envelope.eventId(), inboundTraceparent, inboundTracestate, payload, now);
+        fireTerminalEvent(saga, SagaEventTypes.ORDER_CANCELLED, envelope.eventId(), payload, now);
     }
 
-    private void beginCompensation(SagaInstance saga, UUID causationId, String inboundTraceparent, String inboundTracestate, Instant now) {
+    private void beginCompensation(SagaInstance saga, UUID causationId, Instant now) {
         Instant deadline = now.plusMillis(properties.refundPaymentTimeoutMs());
         saga.transitionTo(SagaState.AWAITING_REFUND, deadline, now);
         saga.recordCompensationAttempt(now);
         sagaInstanceRepository.save(saga);
 
         Map<String, Object> payload = Map.of("orderId", saga.getOrderId().toString(), "amountCents", saga.getAmountCents());
-        dispatchAndAwait(saga, SagaEventTypes.REFUND_PAYMENT, causationId, inboundTraceparent, inboundTracestate, payload, now);
+        dispatchAndAwait(saga, SagaEventTypes.REFUND_PAYMENT, causationId, payload, now);
     }
 
     /**
@@ -280,9 +288,21 @@ public class SagaOrchestrator {
      * building this class — see the constructor's comment on {@link #transactionTemplate}).
      * {@link TransactionTemplate} demarcates the transaction programmatically instead, which has
      * no proxy to bypass.
+     *
+     * <p>M4: a clock-driven timeout has no inbound message to continue a trace from, so this opens
+     * a brand-new ROOT span (constitution item 2 doesn't apply here — there's no active context to
+     * capture, only one to originate) before doing anything else, so any outbox write the timeout
+     * path triggers still has an active context to capture.
      */
     public void handleTimeout(UUID sagaId) {
-        transactionTemplate.executeWithoutResult(status -> handleTimeoutInTransaction(sagaId));
+        try (SpanHandle span = tracer.startRootSpan("saga.timeout", SpanKind.INTERNAL)) {
+            try {
+                transactionTemplate.executeWithoutResult(status -> handleTimeoutInTransaction(sagaId));
+            } catch (RuntimeException e) {
+                span.recordException(e);
+                throw e;
+            }
+        }
     }
 
     private void handleTimeoutInTransaction(UUID sagaId) {
@@ -318,7 +338,7 @@ public class SagaOrchestrator {
                 saga.getOrderId());
 
         Map<String, Object> payload = Map.of("orderId", saga.getOrderId().toString(), "reason", "payment authorization timed out");
-        fireTerminalEvent(saga, SagaEventTypes.ORDER_CANCELLED, null, null, null, payload, now);
+        fireTerminalEvent(saga, SagaEventTypes.ORDER_CANCELLED, null, payload, now);
     }
 
     private void handleReserveInventoryTimeout(SagaInstance saga, Instant now) {
@@ -328,7 +348,7 @@ public class SagaOrchestrator {
                         + " payment was already authorized, so compensation begins",
                 saga.getSagaId(),
                 saga.getOrderId());
-        beginCompensation(saga, null, null, null, now);
+        beginCompensation(saga, null, now);
     }
 
     private void handleRefundPaymentTimeout(SagaInstance saga, Instant now) {
@@ -370,44 +390,23 @@ public class SagaOrchestrator {
                 properties.maxCompensationAttempts());
 
         Map<String, Object> payload = Map.of("orderId", saga.getOrderId().toString(), "amountCents", saga.getAmountCents());
-        dispatchAndAwait(saga, SagaEventTypes.REFUND_PAYMENT, null, null, null, payload, now);
+        dispatchAndAwait(saga, SagaEventTypes.REFUND_PAYMENT, null, payload, now);
     }
 
-    private void dispatchAndAwait(
-            SagaInstance saga,
-            String eventType,
-            UUID causationId,
-            String inboundTraceparent,
-            String inboundTracestate,
-            Map<String, Object> payload,
-            Instant now) {
-        writeOutboxEvent(saga, eventType, causationId, inboundTraceparent, inboundTracestate, payload, now);
+    private void dispatchAndAwait(SagaInstance saga, String eventType, UUID causationId, Map<String, Object> payload, Instant now) {
+        writeOutboxEvent(saga, eventType, causationId, payload, now);
         sagaStepRepository.save(new SagaStep(UUID.randomUUID(), saga.getSagaId(), eventType, "DISPATCHED", now, null));
     }
 
-    private void fireTerminalEvent(
-            SagaInstance saga,
-            String eventType,
-            UUID causationId,
-            String inboundTraceparent,
-            String inboundTracestate,
-            Map<String, Object> payload,
-            Instant now) {
-        writeOutboxEvent(saga, eventType, causationId, inboundTraceparent, inboundTracestate, payload, now);
+    private void fireTerminalEvent(SagaInstance saga, String eventType, UUID causationId, Map<String, Object> payload, Instant now) {
+        writeOutboxEvent(saga, eventType, causationId, payload, now);
         sagaStepRepository.save(new SagaStep(UUID.randomUUID(), saga.getSagaId(), eventType, "SUCCEEDED", now, null));
     }
 
-    private void writeOutboxEvent(
-            SagaInstance saga,
-            String eventType,
-            UUID causationId,
-            String inboundTraceparent,
-            String inboundTracestate,
-            Map<String, Object> payload,
-            Instant now) {
+    private void writeOutboxEvent(SagaInstance saga, String eventType, UUID causationId, Map<String, Object> payload, Instant now) {
         UUID eventId = UUID.randomUUID();
         long sequence = saga.allocateNextSequence();
-        String traceparent = TraceContextCapture.continueOrStart(inboundTraceparent);
+        EventForgeTracer.CapturedContext context = tracer.captureCurrentContext();
         String payloadJson;
         try {
             payloadJson = objectMapper.writeValueAsString(payload);
@@ -423,8 +422,8 @@ public class SagaOrchestrator {
                 1,
                 saga.getCorrelationId(),
                 causationId,
-                traceparent,
-                inboundTracestate,
+                context.traceparent(),
+                context.tracestate(),
                 payloadJson,
                 now));
     }

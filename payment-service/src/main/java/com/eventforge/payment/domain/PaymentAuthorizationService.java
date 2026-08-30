@@ -6,7 +6,7 @@ import com.eventforge.events.envelope.EventEnvelope;
 import com.eventforge.events.envelope.EventEnvelopeMapper;
 import com.eventforge.events.outbox.OutboxEventRow;
 import com.eventforge.events.outbox.OutboxWriter;
-import com.eventforge.events.trace.TraceContextCapture;
+import com.eventforge.events.tracing.EventForgeTracer;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
@@ -41,20 +41,25 @@ public class PaymentAuthorizationService {
     private final ProcessedEventStore processedEventStore;
     private final PaymentRepository paymentRepository;
     private final OutboxWriter outboxWriter;
+    private final EventForgeTracer tracer;
 
     // Same reasoning as OrderService (ADR-0009): Spring Boot 4's own JacksonAutoConfiguration is
     // Jackson-3-shaped and doesn't register a com.fasterxml.jackson.databind.ObjectMapper bean.
     private final ObjectMapper objectMapper = EventEnvelopeMapper.create();
 
     public PaymentAuthorizationService(
-            ProcessedEventStore processedEventStore, PaymentRepository paymentRepository, OutboxWriter outboxWriter) {
+            ProcessedEventStore processedEventStore,
+            PaymentRepository paymentRepository,
+            OutboxWriter outboxWriter,
+            EventForgeTracer tracer) {
         this.processedEventStore = processedEventStore;
         this.paymentRepository = paymentRepository;
         this.outboxWriter = outboxWriter;
+        this.tracer = tracer;
     }
 
     @Transactional
-    public ConsumerOutcome handleAuthorizePayment(EventEnvelope envelope, String inboundTraceparent, String inboundTracestate) {
+    public ConsumerOutcome handleAuthorizePayment(EventEnvelope envelope) {
         boolean isNew = processedEventStore.tryMarkProcessed(CONSUMER_GROUP, envelope.eventId(), envelope.aggregateId());
         if (!isNew) {
             // A clean no-op, not an exception: nothing else in this transaction has run, so
@@ -72,7 +77,7 @@ public class PaymentAuthorizationService {
         paymentRepository.save(payment);
 
         UUID nextEventId = UUID.randomUUID();
-        String traceparent = TraceContextCapture.continueOrStart(inboundTraceparent);
+        EventForgeTracer.CapturedContext context = tracer.captureCurrentContext();
         Map<String, Object> payload = Map.of(
                 "orderId", orderId,
                 "paymentId", paymentId.toString(),
@@ -89,8 +94,8 @@ public class PaymentAuthorizationService {
                 1,
                 envelope.correlationId(),
                 envelope.eventId(),
-                traceparent,
-                inboundTracestate,
+                context.traceparent(),
+                context.tracestate(),
                 writeJson(payload),
                 now));
 
@@ -117,7 +122,7 @@ public class PaymentAuthorizationService {
      * </ol>
      */
     @Transactional
-    public ConsumerOutcome handleRefundPayment(EventEnvelope envelope, String inboundTraceparent, String inboundTracestate) {
+    public ConsumerOutcome handleRefundPayment(EventEnvelope envelope) {
         boolean isNew = processedEventStore.tryMarkProcessed(CONSUMER_GROUP, envelope.eventId(), envelope.aggregateId());
         if (!isNew) {
             return ConsumerOutcome.DUPLICATE;
@@ -125,7 +130,6 @@ public class PaymentAuthorizationService {
 
         String orderId = envelope.aggregateId();
         Instant now = Instant.now();
-        String traceparent = TraceContextCapture.continueOrStart(inboundTraceparent);
 
         Payment payment = paymentRepository
                 .findByOrderId(orderId)
@@ -138,19 +142,19 @@ public class PaymentAuthorizationService {
                             + " fact never reached the orchestrator",
                     orderId,
                     payment.getPaymentId());
-            writePaymentRefunded(payment, envelope, traceparent, inboundTracestate, now);
+            writePaymentRefunded(payment, envelope, now);
             return ConsumerOutcome.PROCESSED;
         }
 
         payment.markRefunded(now);
         paymentRepository.save(payment);
-        writePaymentRefunded(payment, envelope, traceparent, inboundTracestate, now);
+        writePaymentRefunded(payment, envelope, now);
         return ConsumerOutcome.PROCESSED;
     }
 
-    private void writePaymentRefunded(
-            Payment payment, EventEnvelope envelope, String traceparent, String inboundTracestate, Instant now) {
+    private void writePaymentRefunded(Payment payment, EventEnvelope envelope, Instant now) {
         UUID nextEventId = UUID.randomUUID();
+        EventForgeTracer.CapturedContext context = tracer.captureCurrentContext();
         Map<String, Object> payload = Map.of(
                 "orderId", payment.getOrderId(),
                 "paymentId", payment.getPaymentId().toString(),
@@ -165,8 +169,8 @@ public class PaymentAuthorizationService {
                 1,
                 envelope.correlationId(),
                 envelope.eventId(),
-                traceparent,
-                inboundTracestate,
+                context.traceparent(),
+                context.tracestate(),
                 writeJson(payload),
                 now));
     }

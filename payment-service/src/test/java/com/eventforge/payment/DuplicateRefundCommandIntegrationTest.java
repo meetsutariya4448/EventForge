@@ -49,14 +49,14 @@ class DuplicateRefundCommandIntegrationTest extends AbstractPostgresKafkaIntegra
 
         EventEnvelope authorize = envelope("AuthorizePayment", orderId, UUID.randomUUID(),
                 mapper.createObjectNode().put("orderId", orderId).put("amountCents", amountCents));
-        assertThat(paymentAuthorizationService.handleAuthorizePayment(authorize, null, null)).isEqualTo(ConsumerOutcome.PROCESSED);
+        assertThat(paymentAuthorizationService.handleAuthorizePayment(authorize)).isEqualTo(ConsumerOutcome.PROCESSED);
 
         UUID refundEventId = UUID.randomUUID();
         EventEnvelope refund = envelope("RefundPayment", orderId, refundEventId,
                 mapper.createObjectNode().put("orderId", orderId).put("amountCents", amountCents));
 
-        ConsumerOutcome first = paymentAuthorizationService.handleRefundPayment(refund, null, null);
-        ConsumerOutcome second = paymentAuthorizationService.handleRefundPayment(refund, null, null);
+        ConsumerOutcome first = paymentAuthorizationService.handleRefundPayment(refund);
+        ConsumerOutcome second = paymentAuthorizationService.handleRefundPayment(refund);
 
         assertThat(first).isEqualTo(ConsumerOutcome.PROCESSED);
         assertThat(second).isEqualTo(ConsumerOutcome.DUPLICATE);

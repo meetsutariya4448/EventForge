@@ -33,6 +33,14 @@ eventforge:
       # no new relay code needed, exactly as the M2 comment here anticipated.
       enabled: true
       topic: inventory.events
+  tracing:
+    otlp-endpoint: http://localhost:4317
+    sampling-probability: 1.0
+
+logging:
+  structured:
+    format:
+      console: ecs
 
 management:
   endpoints:

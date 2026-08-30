@@ -6,7 +6,7 @@ import com.eventforge.events.envelope.EventEnvelope;
 import com.eventforge.events.envelope.EventEnvelopeMapper;
 import com.eventforge.events.outbox.OutboxEventRow;
 import com.eventforge.events.outbox.OutboxWriter;
-import com.eventforge.events.trace.TraceContextCapture;
+import com.eventforge.events.tracing.EventForgeTracer;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
@@ -36,6 +36,7 @@ public class InventoryReservationService {
     private final InventoryItemRepository inventoryItemRepository;
     private final InventoryReservationRepository inventoryReservationRepository;
     private final OutboxWriter outboxWriter;
+    private final EventForgeTracer tracer;
 
     // Same reasoning as every other service (ADR-0009).
     private final ObjectMapper objectMapper = EventEnvelopeMapper.create();
@@ -44,15 +45,17 @@ public class InventoryReservationService {
             ProcessedEventStore processedEventStore,
             InventoryItemRepository inventoryItemRepository,
             InventoryReservationRepository inventoryReservationRepository,
-            OutboxWriter outboxWriter) {
+            OutboxWriter outboxWriter,
+            EventForgeTracer tracer) {
         this.processedEventStore = processedEventStore;
         this.inventoryItemRepository = inventoryItemRepository;
         this.inventoryReservationRepository = inventoryReservationRepository;
         this.outboxWriter = outboxWriter;
+        this.tracer = tracer;
     }
 
     @Transactional
-    public ConsumerOutcome handleReserveInventory(EventEnvelope envelope, String inboundTraceparent, String inboundTracestate) {
+    public ConsumerOutcome handleReserveInventory(EventEnvelope envelope) {
         boolean isNew = processedEventStore.tryMarkProcessed(CONSUMER_GROUP, envelope.eventId(), envelope.aggregateId());
         if (!isNew) {
             return ConsumerOutcome.DUPLICATE;
@@ -62,11 +65,10 @@ public class InventoryReservationService {
         String sku = envelope.payload().get("sku").asText();
         long quantity = envelope.payload().get("quantity").asLong();
         Instant now = Instant.now();
-        String traceparent = TraceContextCapture.continueOrStart(inboundTraceparent);
 
         Optional<InventoryItem> maybeItem = inventoryItemRepository.findWithLockBySku(sku);
         if (maybeItem.isEmpty()) {
-            writeInventoryReservationFailed(orderId, envelope, traceparent, inboundTracestate, "unknown sku " + sku, now);
+            writeInventoryReservationFailed(orderId, envelope, "unknown sku " + sku, now);
             return ConsumerOutcome.PROCESSED;
         }
 
@@ -75,8 +77,6 @@ public class InventoryReservationService {
             writeInventoryReservationFailed(
                     orderId,
                     envelope,
-                    traceparent,
-                    inboundTracestate,
                     "insufficient stock for " + sku + ": requested " + quantity + ", available " + item.getAvailableQuantity(),
                     now);
             return ConsumerOutcome.PROCESSED;
@@ -87,6 +87,7 @@ public class InventoryReservationService {
         inventoryReservationRepository.save(new InventoryReservation(reservationId, orderId, sku, quantity, "RESERVED", now));
 
         UUID nextEventId = UUID.randomUUID();
+        EventForgeTracer.CapturedContext context = tracer.captureCurrentContext();
         Map<String, Object> payload =
                 Map.of("orderId", orderId, "reservationId", reservationId.toString(), "sku", sku, "quantity", quantity);
         outboxWriter.write(new OutboxEventRow(
@@ -98,17 +99,17 @@ public class InventoryReservationService {
                 1,
                 envelope.correlationId(),
                 envelope.eventId(),
-                traceparent,
-                inboundTracestate,
+                context.traceparent(),
+                context.tracestate(),
                 writeJson(payload),
                 now));
 
         return ConsumerOutcome.PROCESSED;
     }
 
-    private void writeInventoryReservationFailed(
-            String orderId, EventEnvelope envelope, String traceparent, String inboundTracestate, String reason, Instant now) {
+    private void writeInventoryReservationFailed(String orderId, EventEnvelope envelope, String reason, Instant now) {
         UUID nextEventId = UUID.randomUUID();
+        EventForgeTracer.CapturedContext context = tracer.captureCurrentContext();
         Map<String, Object> payload = Map.of("orderId", orderId, "reason", reason);
         outboxWriter.write(new OutboxEventRow(
                 nextEventId,
@@ -119,8 +120,8 @@ public class InventoryReservationService {
                 1,
                 envelope.correlationId(),
                 envelope.eventId(),
-                traceparent,
-                inboundTracestate,
+                context.traceparent(),
+                context.tracestate(),
                 writeJson(payload),
                 now));
     }

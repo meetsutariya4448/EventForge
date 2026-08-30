@@ -28,6 +28,16 @@ spring:
 # No eventforge.outbox.relay.* here either: notification-service is a terminal consumer, nothing
 # downstream reacts to a notification being sent.
 
+eventforge:
+  tracing:
+    otlp-endpoint: http://localhost:4317
+    sampling-probability: 1.0
+
+logging:
+  structured:
+    format:
+      console: ecs
+
 management:
   endpoints:
     web:

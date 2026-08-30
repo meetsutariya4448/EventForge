@@ -84,7 +84,7 @@ class ConcurrentInventoryReservationIntegrationTest extends AbstractPostgresKafk
                             UUID.randomUUID(),
                             Instant.now(),
                             mapper.createObjectNode().put("orderId", orderId).put("sku", sku).put("quantity", 1));
-                    ConsumerOutcome outcome = service.handleReserveInventory(command, null, null);
+                    ConsumerOutcome outcome = service.handleReserveInventory(command);
                     assertThat(outcome).isEqualTo(ConsumerOutcome.PROCESSED);
                     String status = jdbcTemplate.queryForObject(
                             "SELECT count(*) FROM inventory_reservations WHERE order_id = ?", Integer.class, orderId) == 1

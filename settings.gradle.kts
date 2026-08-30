@@ -17,5 +17,6 @@ include(
     "order-service",
     "payment-service",
     "inventory-service",
-    "notification-service"
+    "notification-service",
+    "e2e-tests"
 )

@@ -3,7 +3,7 @@ package com.eventforge.order.domain;
 import com.eventforge.events.envelope.EventEnvelopeMapper;
 import com.eventforge.events.outbox.OutboxEventRow;
 import com.eventforge.events.outbox.OutboxWriter;
-import com.eventforge.events.trace.TraceContextCapture;
+import com.eventforge.events.tracing.EventForgeTracer;
 import com.eventforge.order.saga.SagaOrchestrator;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -31,6 +31,7 @@ public class OrderService {
     private final OrderRepository orderRepository;
     private final OutboxWriter outboxWriter;
     private final SagaOrchestrator sagaOrchestrator;
+    private final EventForgeTracer tracer;
 
     // Deliberately not an autowired Spring-managed ObjectMapper: Spring Boot 4's own
     // JacksonAutoConfiguration is Jackson-3-shaped (tools.jackson) and doesn't register a
@@ -38,15 +39,16 @@ public class OrderService {
     // same explicit mapper the event contract itself defines, not an ambient default.
     private final ObjectMapper objectMapper = EventEnvelopeMapper.create();
 
-    public OrderService(OrderRepository orderRepository, OutboxWriter outboxWriter, SagaOrchestrator sagaOrchestrator) {
+    public OrderService(
+            OrderRepository orderRepository, OutboxWriter outboxWriter, SagaOrchestrator sagaOrchestrator, EventForgeTracer tracer) {
         this.orderRepository = orderRepository;
         this.outboxWriter = outboxWriter;
         this.sagaOrchestrator = sagaOrchestrator;
+        this.tracer = tracer;
     }
 
     @Transactional
-    public Order createOrder(
-            long amountCents, String sku, long quantity, String inboundTraceparent, String inboundTracestate) {
+    public Order createOrder(long amountCents, String sku, long quantity) {
         UUID orderId = UUID.randomUUID();
         Instant now = Instant.now();
 
@@ -54,7 +56,10 @@ public class OrderService {
         orderRepository.save(order);
 
         UUID eventId = UUID.randomUUID();
-        String traceparent = TraceContextCapture.continueOrStart(inboundTraceparent);
+        // M4 (constitution item 2): the ACTIVE context — the SERVER span OrderController opened
+        // around this whole call — captured via the real W3C propagator, not fabricated and not
+        // reaching into any other hop's context. See ADR-0017.
+        EventForgeTracer.CapturedContext context = tracer.captureCurrentContext();
 
         Map<String, Object> payload =
                 Map.of("orderId", orderId.toString(), "amountCents", amountCents, "status", "PENDING");
@@ -74,12 +79,12 @@ public class OrderService {
                 1,
                 eventId, // root event: correlates with itself
                 null, // root event: no cause
-                traceparent,
-                inboundTracestate,
+                context.traceparent(),
+                context.tracestate(),
                 payloadJson,
                 now));
 
-        sagaOrchestrator.startSaga(order, sku, quantity, eventId, inboundTraceparent, inboundTracestate);
+        sagaOrchestrator.startSaga(order, sku, quantity, eventId);
 
         return order;
     }

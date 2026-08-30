@@ -50,6 +50,14 @@ eventforge:
     refund-payment-timeout-ms: 10000
     max-compensation-attempts: 3
     sweep-interval-ms: 1000
+  tracing:
+    otlp-endpoint: http://localhost:4317
+    sampling-probability: 1.0
+
+logging:
+  structured:
+    format:
+      console: ecs
 
 management:
   endpoints:

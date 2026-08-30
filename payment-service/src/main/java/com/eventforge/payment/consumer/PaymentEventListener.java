@@ -4,6 +4,8 @@ import com.eventforge.events.envelope.EventEnvelope;
 import com.eventforge.events.envelope.EventEnvelopeMapper;
 import com.eventforge.events.fault.FaultInjectionPoint;
 import com.eventforge.events.fault.FaultInjector;
+import com.eventforge.events.tracing.EventForgeTracer;
+import com.eventforge.events.tracing.SpanHandle;
 import com.eventforge.payment.domain.PaymentAuthorizationService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
@@ -34,29 +36,42 @@ public class PaymentEventListener {
 
     private final PaymentAuthorizationService paymentAuthorizationService;
     private final FaultInjector faultInjector;
+    private final EventForgeTracer tracer;
     private final ObjectMapper mapper = EventEnvelopeMapper.create();
 
-    public PaymentEventListener(PaymentAuthorizationService paymentAuthorizationService, FaultInjector faultInjector) {
+    public PaymentEventListener(
+            PaymentAuthorizationService paymentAuthorizationService, FaultInjector faultInjector, EventForgeTracer tracer) {
         this.paymentAuthorizationService = paymentAuthorizationService;
         this.faultInjector = faultInjector;
+        this.tracer = tracer;
     }
 
     @KafkaListener(id = "payment-order-events", topics = "orders.events", groupId = PaymentAuthorizationService.CONSUMER_GROUP)
     public void onOrderEvent(ConsumerRecord<String, String> record, Acknowledgment ack) throws Exception {
         EventEnvelope envelope = mapper.readValue(record.value(), EventEnvelope.class);
-
-        switch (envelope.eventType()) {
-            case "AuthorizePayment" -> paymentAuthorizationService.handleAuthorizePayment(
-                    envelope, headerValue(record, "traceparent"), headerValue(record, "tracestate"));
-            case "RefundPayment" -> paymentAuthorizationService.handleRefundPayment(
-                    envelope, headerValue(record, "traceparent"), headerValue(record, "tracestate"));
-            default -> {
-                ack.acknowledge();
-                return;
-            }
+        if (!"AuthorizePayment".equals(envelope.eventType()) && !"RefundPayment".equals(envelope.eventType())) {
+            ack.acknowledge();
+            return;
         }
 
-        faultInjector.inject(FaultInjectionPoint.AFTER_BUSINESS_COMMIT_BEFORE_OFFSET_ACK);
+        // M4 (constitution item 4): extract from the consumed record's headers, continue the
+        // trace, span the business transaction and the next outbox write — handleAuthorizePayment/
+        // handleRefundPayment no longer take trace parameters; they capture whatever context this
+        // span makes active. See ADR-0017.
+        try (SpanHandle span = tracer.startConsumerSpan(
+                "payment." + envelope.eventType(), headerValue(record, "traceparent"), headerValue(record, "tracestate"))) {
+            try {
+                switch (envelope.eventType()) {
+                    case "AuthorizePayment" -> paymentAuthorizationService.handleAuthorizePayment(envelope);
+                    case "RefundPayment" -> paymentAuthorizationService.handleRefundPayment(envelope);
+                    default -> throw new IllegalStateException("unreachable: " + envelope.eventType());
+                }
+                faultInjector.inject(FaultInjectionPoint.AFTER_BUSINESS_COMMIT_BEFORE_OFFSET_ACK);
+            } catch (RuntimeException e) {
+                span.recordException(e);
+                throw e;
+            }
+        }
 
         ack.acknowledge();
     }

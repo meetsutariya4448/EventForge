@@ -47,7 +47,7 @@ class ReserveInventoryIntegrationTest extends AbstractPostgresKafkaIntegrationTe
         String orderId = "reserve-ok-" + UUID.randomUUID();
 
         EventEnvelope command = reserveCommand(orderId, UUID.randomUUID(), sku, 4);
-        ConsumerOutcome outcome = service.handleReserveInventory(command, null, null);
+        ConsumerOutcome outcome = service.handleReserveInventory(command);
         assertThat(outcome).isEqualTo(ConsumerOutcome.PROCESSED);
 
         Long remaining = jdbcTemplate.queryForObject("SELECT available_quantity FROM inventory_items WHERE sku = ?", Long.class, sku);
@@ -71,7 +71,7 @@ class ReserveInventoryIntegrationTest extends AbstractPostgresKafkaIntegrationTe
         String orderId = "reserve-fail-" + UUID.randomUUID();
 
         EventEnvelope command = reserveCommand(orderId, UUID.randomUUID(), sku, 5);
-        ConsumerOutcome outcome = service.handleReserveInventory(command, null, null);
+        ConsumerOutcome outcome = service.handleReserveInventory(command);
         assertThat(outcome).isEqualTo(ConsumerOutcome.PROCESSED);
 
         Long remaining = jdbcTemplate.queryForObject("SELECT available_quantity FROM inventory_items WHERE sku = ?", Long.class, sku);
@@ -96,8 +96,8 @@ class ReserveInventoryIntegrationTest extends AbstractPostgresKafkaIntegrationTe
         UUID eventId = UUID.randomUUID();
 
         EventEnvelope command = reserveCommand(orderId, eventId, sku, 3);
-        service.handleReserveInventory(command, null, null);
-        ConsumerOutcome second = service.handleReserveInventory(command, null, null);
+        service.handleReserveInventory(command);
+        ConsumerOutcome second = service.handleReserveInventory(command);
         assertThat(second).isEqualTo(ConsumerOutcome.DUPLICATE);
 
         Long remaining = jdbcTemplate.queryForObject("SELECT available_quantity FROM inventory_items WHERE sku = ?", Long.class, sku);

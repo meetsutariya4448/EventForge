@@ -1,11 +1,31 @@
 name: eventforge
 
-# Infra only — Kafka (KRaft, no ZooKeeper) + one Postgres per service. The 4 Spring Boot services
-# are NOT started here; `make up` launches them as local JVM processes against this infra
-# (see scripts/start-services.sh). Testcontainers-based tests never depend on this file being up —
-# see docs/adr/0008-compose-scope-vs-testcontainers.md.
+# Infra only — Kafka (KRaft, no ZooKeeper) + one Postgres per service + Jaeger for trace collection
+# (M4). The 4 Spring Boot services are NOT started here; `make up` launches them as local JVM
+# processes against this infra (see scripts/start-services.sh). Testcontainers-based tests never
+# depend on this file being up — see docs/adr/0008-compose-scope-vs-testcontainers.md.
 
 services:
+  # M4: Jaeger's own OTLP receiver IS the "collector" this project sends traces to — no separate
+  # otel-collector container. See ADR-0018 for why that extra hop buys nothing at this project's
+  # scale. gRPC (4317) is what every service's OtlpGrpcSpanExporter targets; 4318 (HTTP) is unused
+  # here but left exposed since it's part of the same receiver and costs nothing to expose.
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: eventforge-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # Jaeger UI
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:16686/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
   kafka:
     image: apache/kafka:4.3.1
     container_name: eventforge-kafka

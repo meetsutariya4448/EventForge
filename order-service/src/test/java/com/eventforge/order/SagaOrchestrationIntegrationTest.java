@@ -69,7 +69,7 @@ class SagaOrchestrationIntegrationTest extends AbstractPostgresKafkaIntegrationT
     void happyPathReachesCompletedWithAConsistentLedger() throws Exception {
         drainAllPending();
 
-        Order order = orderService.createOrder(5000, "sku-happy", 2L, null, null);
+        Order order = orderService.createOrder(5000, "sku-happy", 2L);
         UUID orderId = order.getOrderId();
         drainAllPending();
 
@@ -118,7 +118,7 @@ class SagaOrchestrationIntegrationTest extends AbstractPostgresKafkaIntegrationT
     void forcedInventoryFailureCompensatesAndCancelsTheOrder() throws Exception {
         drainAllPending();
 
-        Order order = orderService.createOrder(4200, "sku-fail", 1L, null, null);
+        Order order = orderService.createOrder(4200, "sku-fail", 1L);
         UUID orderId = order.getOrderId();
         drainAllPending();
 
@@ -166,7 +166,7 @@ class SagaOrchestrationIntegrationTest extends AbstractPostgresKafkaIntegrationT
     void aFactArrivingOutOfStateIsACleanNoOpNotADoubleTransition() throws Exception {
         drainAllPending();
 
-        Order order = orderService.createOrder(1500, "sku-stale-fact", 1L, null, null);
+        Order order = orderService.createOrder(1500, "sku-stale-fact", 1L);
         UUID orderId = order.getOrderId();
         drainAllPending();
 

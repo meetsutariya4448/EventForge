@@ -4,9 +4,23 @@ plugins {
 
 dependencies {
     implementation(platform("org.springframework.boot:spring-boot-dependencies:4.1.1"))
+    api(platform("io.opentelemetry:opentelemetry-bom:1.65.0"))
 
     api("com.fasterxml.jackson.core:jackson-databind")
     api("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
+
+    // M4: EventForgeTracer/SpanHandle expose OTel API types (Tracer, Span, SpanKind) directly in
+    // their own public signatures, so every consuming service needs these on its own compile
+    // classpath too — api, not compileOnly. The SDK/exporter/semconv artifacts are only needed to
+    // BUILD the SdkTracerProvider in TracingAutoConfiguration; consumers never reference SDK
+    // classes directly, so those stay implementation.
+    api("io.opentelemetry:opentelemetry-api")
+    api("io.opentelemetry:opentelemetry-context")
+    implementation("io.opentelemetry:opentelemetry-sdk")
+    implementation("io.opentelemetry:opentelemetry-exporter-otlp")
+    // Not in the opentelemetry-bom: semantic conventions version independently of the SDK, and
+    // moved group ID from io.opentelemetry to io.opentelemetry.semconv.
+    implementation("io.opentelemetry.semconv:opentelemetry-semconv:1.41.1")
 
     // Auto-configuration support for the FaultInjector/OutboxWriter/OutboxRelay default beans.
     // compileOnly: every consuming Spring Boot service already brings these at runtime via its

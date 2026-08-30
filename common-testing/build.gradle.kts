@@ -24,5 +24,10 @@ dependencies {
     // hand-rolled reflection scanner.
     api("com.tngtech.archunit:archunit-junit5:1.3.0")
 
+    // M4: InMemorySpanExporter — the automated trace-continuity test (constitution item 6) queries
+    // this directly rather than a real Jaeger, exactly the "test, not a screenshot" discipline the
+    // milestone demands. Version comes from common-events' opentelemetry-bom platform constraint.
+    api("io.opentelemetry:opentelemetry-sdk-testing")
+
     runtimeOnly("org.junit.platform:junit-platform-launcher")
 }

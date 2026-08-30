@@ -4,6 +4,8 @@ import com.eventforge.events.envelope.EventEnvelope;
 import com.eventforge.events.envelope.EventEnvelopeMapper;
 import com.eventforge.events.fault.FaultInjectionPoint;
 import com.eventforge.events.fault.FaultInjector;
+import com.eventforge.events.tracing.EventForgeTracer;
+import com.eventforge.events.tracing.SpanHandle;
 import com.eventforge.inventory.domain.InventoryReservationService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
@@ -17,17 +19,22 @@ import org.springframework.stereotype.Component;
  * M3: replaces M2's {@code InventoryEventListener}, which reacted to raw {@code OrderCreated}.
  * This listens for the orchestrator's explicit {@code ReserveInventory} command instead — same
  * orchestrated-not-choreographed reasoning as payment-service's listener.
+ *
+ * <p>M4: extracts the trace context from the consumed record's headers and opens a CONSUMER span
+ * around the handler — see ADR-0017.
  */
 @Component
 public class InventoryCommandListener {
 
     private final InventoryReservationService service;
     private final FaultInjector faultInjector;
+    private final EventForgeTracer tracer;
     private final ObjectMapper mapper = EventEnvelopeMapper.create();
 
-    public InventoryCommandListener(InventoryReservationService service, FaultInjector faultInjector) {
+    public InventoryCommandListener(InventoryReservationService service, FaultInjector faultInjector, EventForgeTracer tracer) {
         this.service = service;
         this.faultInjector = faultInjector;
+        this.tracer = tracer;
     }
 
     @KafkaListener(
@@ -41,8 +48,16 @@ public class InventoryCommandListener {
             return;
         }
 
-        service.handleReserveInventory(envelope, headerValue(record, "traceparent"), headerValue(record, "tracestate"));
-        faultInjector.inject(FaultInjectionPoint.AFTER_BUSINESS_COMMIT_BEFORE_OFFSET_ACK);
+        try (SpanHandle span = tracer.startConsumerSpan(
+                "inventory.reserve", headerValue(record, "traceparent"), headerValue(record, "tracestate"))) {
+            try {
+                service.handleReserveInventory(envelope);
+                faultInjector.inject(FaultInjectionPoint.AFTER_BUSINESS_COMMIT_BEFORE_OFFSET_ACK);
+            } catch (RuntimeException e) {
+                span.recordException(e);
+                throw e;
+            }
+        }
         ack.acknowledge();
     }
 
