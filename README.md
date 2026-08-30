@@ -173,12 +173,9 @@ README is going to guess at.
 Verified against a genuinely clean clone.
 
 Prerequisites: Docker, with Compose v2 or later (`docker compose version`). Nothing else — Java and
-Gradle are self-provisioned by the Gradle wrapper on first build. `make test` runs every
-Testcontainers-backed test class serialized, one at a time, rather than concurrently, to reduce
-memory pressure — but on a Docker Desktop allocation around 3.8 GB that is also shared with other,
-unrelated projects, the full suite has still been observed to fail intermittently in `order-service`
-specifically. See "Known limitations" below before assuming a red `order-service` run means a real
-regression.
+Gradle are self-provisioned by the Gradle wrapper on first build. `order-service`'s own test suite
+has a known, confirmed source of flakiness unrelated to host resources — see "Known limitations"
+below before assuming a red `order-service` run means a real regression.
 
 ```
 git clone <this repo>
@@ -236,30 +233,42 @@ what would change it.
 
 ## Known limitations, and what's next
 
-- **`order-service`'s Testcontainers-backed tests fail intermittently under this repo's own
-  verification conditions, and the affected class changes from run to run.** Three separate full
-  suite runs on this machine each failed a different, non-overlapping set of `order-service` test
-  classes (`MultiWorkerRelayOrderingIntegrationTest` and `RelayAsyncGapTraceIntegrationTest` in one
-  run; `RelayAsyncGapTraceIntegrationTest` and `RelayPublishSpanIntegrationTest` in another;
-  `RelayPublishSpanIntegrationTest`, `OutboxRelayCrashWindowIntegrationTest`, and
-  `RelayUnderToxicNetworkIntegrationTest` in a third), with symptoms ranging from a genuine
-  `TimeoutException` to a relay claim query finding nothing to claim moments after a synthetic row
-  was inserted. Every module other than `order-service` — `common-events`, `common-testing`,
-  `payment-service`, `inventory-service`, `notification-service`, `e2e-tests` — passed cleanly in
-  all three runs. Mitigated, but not eliminated: every Testcontainers-backed test task across the
-  whole build now runs serialized via a shared build-service lock
-  (`buildSrc/.../eventforge.java-conventions.gradle.kts`), so no two such test JVMs in this repo
-  ever contend with each other regardless of module or Gradle's own project-parallel settings (a
-  plain `gradle.properties` setting can't guarantee this — a developer's own `GRADLE_USER_HOME`
-  config overrides a project-committed one, verified directly). That removes EventForge's own
-  self-contention as a cause, and the three verification runs above were all run *after* it was in
-  place — they still failed. The remaining, most likely cause: this machine's Docker Desktop
-  allocation (~3.8 GB) is shared with several other, unrelated projects' leftover volumes and image
-  cache, not exclusive to EventForge, and `order-service` has by far the largest and heaviest
-  Testcontainers-based test suite of any module here. This is a real, open reliability gap, not a
-  cosmetic one — a red `order-service` run on a constrained or shared Docker host is not on its own
-  evidence of a regression; re-running `./gradlew :order-service:test` for the specific failing
-  class in isolation is the way to tell the two apart.
+- **`order-service`'s Testcontainers-backed tests were flaky for two confirmed, distinct, in-repo
+  reasons — not host memory.** An earlier version of this section blamed a shared, constrained
+  Docker host; that diagnosis was wrong, and was corrected once evidence contradicted it rather than
+  left to stand.
+
+  **Cause 1 (fixed): shared static containers across test classes.**
+  `AbstractPostgresKafkaIntegrationTest`/`AbstractToxicKafkaIntegrationTest` declare Postgres and
+  Kafka as `protected static final` — one field, shared by every subclass, initialized once per JVM
+  and never reset. Gradle runs one module's whole `test` task in a single reused JVM by default, so
+  all of `order-service`'s test classes were sharing one database and one broker: an earlier class's
+  leftover rows, topics, and consumer-group offsets were visible to a later class. Confirmed by
+  running `order-service` completely alone (no other module, no other project) three times — it
+  still failed every time, a different class each time, which rules out cross-project contention as
+  the cause. Fixed with `forkEvery = 1` on `order-service`'s `test` task (a fresh JVM, and therefore
+  fresh containers, per class): the previously-flaky classes (`MultiWorkerRelayOrderingIntegrationTest`,
+  `OutboxRelayCrashWindowIntegrationTest`, `RelayPublishSpanIntegrationTest`,
+  `RelayUnderToxicNetworkIntegrationTest`) stopped recurring entirely across multiple genuinely
+  fresh full-suite re-runs, at a measured wall-clock cost of about 13 seconds on this suite — see
+  that build file's own comment for the full evidence and numbers.
+
+  **Cause 2 (confirmed, not yet fixed): a real race against the background relay scheduler.**
+  `RelayAsyncGapTraceIntegrationTest` kept failing even with `forkEvery = 1`, in complete isolation.
+  Direct evidence, captured with a temporary diagnostic query on reproduction: the synthetic outbox
+  row the test expects to publish itself already shows `published_at` set and `publish_attempts = 1`
+  by the time the test's own explicit `relayWorker.relayNextEvent()` call runs. Something else
+  published it first. `OutboxRelayScheduler`'s `@Scheduled` poller has no `initialDelay`, so its
+  first tick fires on Spring's own async scheduling thread as soon as the scheduler infrastructure
+  is ready — with no happens-before relationship to the test method's own thread. Under the right
+  timing, that first tick lands *after* the test's synthetic row exists rather than before it,
+  claims it, and the test's own call finds nothing left. At least ten of `order-service`'s test
+  classes disable the scheduler only by setting its poll interval to an hour rather than by
+  disabling it outright, so all of them carry the same structural exposure, even though only this
+  one has reproduced it so far. This is a real bug — the correct fix is a way to obtain the relay
+  worker bean without also starting its background scheduler, not a longer sleep or a retry loop,
+  either of which would hide the race rather than close it. Not yet implemented; flagging it here
+  rather than shipping a fix that wasn't verified against the actual cause.
 - **`processed_events` has no retention policy**, and none of the duplicate-absorption tests exercise what happens once a row eventually ages out — [docs/duplicate-taxonomy.md](docs/duplicate-taxonomy.md) states the failure mode precisely (row 9) without a test forcing it, because there is no archival implementation yet to test against.
 - **Orchestrator-redispatched commands racing their own original attempt** are reasoned through and handled in production code (the business-level safety net in `payment-service`) but not exercised by a test — every scenario this project's suite currently runs either never redispatches, or redispatches against a consumer that never answers at all (duplicate-taxonomy row 10).
 - **`notification-service` has exactly one layer of duplicate protection**, not two, by deliberate design: a real external side effect (a sent notification) has no local database row to constrain a second attempt against the way `payment-service`'s and `inventory-service`'s business tables do. If its dedupe row ever ages out and a redelivery follows, a second real notification goes out, with nothing left to stop it.
