@@ -72,17 +72,23 @@ publishes.
 | 10 | **Orchestrator command redispatch after timeout** (M3) — a genuinely *different* mechanism from rows 2/3/6/7: the saga's timeout sweep redispatches `RefundPayment` under a brand-new `event_id` when the original attempt's response never arrived in time. This is not a redelivery of the same message — event-level dedupe (row 6's mechanism) cannot see it at all, since the `event_id` is different every time. | `SagaOrchestrator`'s timeout sweep (`handleRefundPaymentTimeout`, ADR-0015) | The business-level safety net (`payment-service` checking `Payment.status` before refunding — layer 2 of ADR-0016's three-layer design) | **Predicted** | No test in this repo redispatches a command and then lets the ORIGINAL attempt also succeed — every required M3 test scenario either never redispatches, or redispatches against a dead consumer that never processes any attempt (see ADR-0016's "Consequences" section, which states this same gap in its own words). The production code path exists and is reasoned through; the redispatch-lands-on-an-already-answered-order interleaving specifically is not exercised by a test. |
 | 11 | **Saga fact arriving out of state** — a fact (e.g. `PaymentAuthorized`, `PaymentRefunded`) arrives when the saga is no longer in the state that fact would normally advance — for instance, a second answer to a redispatched command, after the first answer already moved the saga on. A *different* `event_id` each time, same as row 10, so event-level dedupe alone cannot catch it. | Any saga fact, whenever more than one arrives for a step the saga has already left | `SagaOrchestrator`'s per-handler state guard (every `handleX` method checks the saga is in the exact state it expects before acting — layer 3 of ADR-0016) | **Proven** | `SagaOrchestrationIntegrationTest#aFactArrivingOutOfStateIsACleanNoOpNotADoubleTransition` — a second `PaymentAuthorized` fact for an order already past `AWAITING_PAYMENT` is ignored: state unchanged, no second `ReserveInventory` dispatch. |
 
-## Completion check — as of the end of M3
+## Completion check — as of the end of M4
 
 **Rows 1–8 and 11 are Proven or N/A. Rows 9 and 10 are still Predicted, and that's stated here
 plainly rather than left to be noticed.** Row 9 ("dedupe protection itself expiring") still depends
 on a `processed_events` retention/archival implementation that does not exist yet (T3 remains open)
 — unchanged from M2. Row 10 ("orchestrator command redispatch after timeout") is a real mechanism
 M3's own compensation design surfaces (ADR-0016 names it directly), reasoned through and handled in
-production code, but not exercised by a test in this milestone — every required scenario either
-never redispatches or redispatches against a permanently-dead consumer, neither of which reaches
-the specific "redispatch, then the original attempt ALSO lands" interleaving. Both rows are honest
-gaps, not silently-dropped scope.
+production code, but not exercised by a test — every required scenario either never redispatches or
+redispatches against a permanently-dead consumer, neither of which reaches the specific "redispatch,
+then the original attempt ALSO lands" interleaving. Both rows are honest gaps, not silently-dropped
+scope, and neither status changed between M3 and M4.
+
+**M4 added distributed tracing, not a new way to produce a duplicate.** OpenTelemetry spans and the
+OTLP export to Jaeger are observability instrumentation layered onto the existing write/relay/consume
+paths — they don't introduce a new code path capable of causing the same `event_id` to be observed
+twice, so no row in this table changed, and no row needed adding. This is stated explicitly rather
+than left for a reader to have to confirm for themselves by re-deriving it.
 
 Row 7 is marked Proven, but with a stated caveat in its own cell: the test that proves it exercises
 concurrent contention directly rather than a literally-triggered Kafka rebalance. That distinction

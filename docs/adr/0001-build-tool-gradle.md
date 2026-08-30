@@ -2,8 +2,9 @@
 
 ## Context
 
-EventForge is a 6-module Java 21 build: two shared libraries (`common-events`, `common-testing`)
-and four Spring Boot services. It needs to be buildable from a genuinely clean clone with a single
+EventForge is a 7-module Java 21 build: two shared libraries (`common-events`, `common-testing`),
+four Spring Boot services, and an end-to-end test module (`e2e-tests`, added in M4). It needs to
+be buildable from a genuinely clean clone with a single
 documented command, on a machine that may not have a matching JDK pre-installed — the development
 machine used to bootstrap this repo only had JDK 22 and 25 installed, no JDK 21.
 
@@ -27,7 +28,7 @@ and every module pinned to `JavaLanguageVersion.of(21)` via a `buildSrc` convent
 (`eventforge.java-conventions`). This is what makes "one command from a clean clone" actually true
 regardless of what JDKs happen to be installed on the machine.
 
-Secondarily: this is a 6-module build wanting consistent conventions (Java version, Spring Boot
+Secondarily: this is a 7-module build wanting consistent conventions (Java version, Spring Boot
 starter sets, test framework wiring) across modules. Gradle's `buildSrc` precompiled script
 plugins express shared conventions more directly than Maven's parent-POM + BOM inheritance, without
 restating dependency versions in every module.
@@ -48,3 +49,13 @@ onboarding itself is a wash between the two — the deciding factor is the JDK t
 
 The project needs to interoperate with a Maven-only internal tooling chain, or Gradle's toolchain
 auto-provisioning becomes unreliable in a target CI environment without documented workarounds.
+
+## Changelog
+
+- **M0** — Original decision, written against the 6-module build that existed at the time
+  (`common-events`, `common-testing`, and the four Spring Boot services).
+- **M4** — `e2e-tests` was added as a seventh module (three real Spring Boot applications booted
+  in one JVM for `TraceContinuityIntegrationTest`). This ADR's module counts were left at "6" and
+  went stale until corrected during an M4 documentation cleanup pass; the decision itself (Gradle
+  + Foojay toolchain auto-provisioning) is unaffected by the module count and did not need
+  re-litigating — only the two counts needed fixing.

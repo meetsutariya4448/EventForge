@@ -1,11 +1,13 @@
 # Architecture
 
-This describes EventForge's **target** architecture across all 10 milestones. As of M3, the outbox
-relay (M1), idempotent consumers (M2), and the orchestrated saga with real inventory reservation
-semantics (M3) all exist and are proven against real infrastructure. Distributed tracing (M4) does
-not exist yet — the diagram below is the destination, not the current state in full.
+This describes EventForge's **target** architecture across all 10 milestones. As of M4, the outbox
+relay (M1), idempotent consumers (M2), the orchestrated saga with real inventory reservation
+semantics (M3), and real OpenTelemetry distributed tracing across every hop (M4) all exist and are
+proven against real infrastructure. Milestones M5 onward — DLQ design, autoscaling, and measured
+performance — remain future scope; see the ADR index in [../README.md](../README.md) for what each
+would add.
 
-## Message flow (as built, M3)
+## Message flow (as built, M4)
 
 ```mermaid
 flowchart LR
@@ -36,7 +38,19 @@ flowchart LR
     Inventory -.->|own Postgres| InventoryDB[(inventory DB)]
     Order -.->|own Postgres| OrderDB[(order DB:\norders + saga_instance +\nsaga_step)]
     Notification -.->|own Postgres| NotificationDB[(notification DB)]
+
+    Order -.->|OTLP| Jaeger[[Jaeger]]
+    Payment -.->|OTLP| Jaeger
+    Inventory -.->|OTLP| Jaeger
+    Notification -.->|OTLP| Jaeger
 ```
+
+Every hop above that opens a span — the HTTP entry, every outbox relay's publish, every consumer's
+entry — exports to Jaeger over OTLP (M4). The relay does not copy the stored trace context onto the
+outgoing Kafka record; it extracts that context as a parent, opens its own child span for the
+publish, and injects the child's context into the record's headers, so the relay is a real,
+visible hop rather than an invisible pass-through — see ADR-0017 and
+[docs/adr/0005-trace-context-propagation.md](adr/0005-trace-context-propagation.md)'s M4 note.
 
 Every service owns its own Postgres database — no shared schema, ever. Every service that
 publishes events uses the same outbox mechanism as order-service, not just order-service; otherwise
@@ -86,12 +100,17 @@ exclusively — every event about a given order is keyed by `order_id` and lands
 partition of its aggregate-type topic (see ADR-0003). There is no ordering guarantee, and no
 reliance on one, across different orders or across the cluster as a whole.
 
-## What exists today (M3)
+## What exists today (M4)
 
 - `common-events`: the `EventEnvelope` record and its Jackson (de)serialization contract; the
   `FaultInjector` seam (interface + no-op default), now wired to all three real call sites in the
   constitution (see below);
-  `TraceContextCapture` (hand-generated/continued W3C `traceparent`, no OTel SDK yet — ADR-0011);
+  `EventForgeTracer` (a real, manually-wired OpenTelemetry SDK — M4 replaced M1's hand-generated
+  `TraceContextCapture` string surgery entirely; see ADR-0011 for what M1 did instead and
+  ADR-0017 for why M4's SDK is wired by hand rather than via the Spring Boot starter). The stored
+  `traceparent`/`tracestate` outbox column format did not change between M1 and M4 — only how
+  those strings are produced and what the relay does with them did (see below and ADR-0005's M4
+  note);
   `OutboxWriter` (the one write-side mechanism every publishing service reuses) and the reusable
   `OutboxRelayWorker`/`OutboxRelayScheduler`/`OutboxRelayAutoConfiguration` (single-worker,
   one-row-per-transaction claim/publish/mark-published cycle — ADR-0010), off by default per
@@ -170,9 +189,30 @@ reliance on one, across different orders or across the cluster as a whole.
   constraint, unlike the other two services' business tables — a real external effect has no local
   row to constrain a second attempt against, and that gap is left visible rather than papered over
   (ADR-0012). Unchanged in M3 — still consumes `OrderCreated` only, not part of the saga.
-- `docker/docker-compose.yml`: Kafka (KRaft) + one Postgres per service, for local `make up` — see
-  ADR-0008 for why this is deliberately separate from the Testcontainers-managed containers the
-  test suite uses.
+- `docker/docker-compose.yml`: Kafka (KRaft), one Postgres per service, and (M4) Jaeger, for local
+  `make up` — see ADR-0008 for why this is deliberately separate from the Testcontainers-managed
+  containers the test suite uses.
+- All four services (M4): the write-side operation captures the ACTIVE span's context
+  (`EventForgeTracer.captureCurrentContext()`) into the outbox row at write time — never
+  fabricated, never the relay's own context (trap T5). The relay does not copy that stored context
+  verbatim onto the outgoing Kafka record; it extracts it as a parent, opens its own CHILD span for
+  the publish, and injects that child's context into the headers, so the relay is a real, visible
+  hop rather than an invisible pass-through — the mistake constitution item 3 warns almost every
+  implementation makes. The next service's consumer extracts from the Kafka headers and continues
+  the same trace. Sampling is `ParentBased`, always-on for this project's current scale, and the
+  sampled/not-sampled flag is proven to survive the outbox and the relay unchanged — see ADR-0019,
+  including its amendment on a real sampling-flag bug the project's own test caught. Structured
+  JSON logs (`logging.structured.format.console: ecs`) carry `trace_id`/`span_id` on every line.
+  `correlationId` and the trace ID are two entirely separate mechanisms, never derived from one
+  another — see ADR-0020.
+- `e2e-tests` (M4, new module): boots order-service, payment-service, and inventory-service as
+  three real Spring Boot applications in one JVM against one shared Testcontainers Kafka/Postgres
+  set. `TraceContinuityIntegrationTest` issues one real HTTP request, lets the saga run to
+  completion, and asserts — against a real in-memory span exporter, not a screenshot — that a
+  single trace ID spans every hop from the HTTP entry through inventory-service, with the correct
+  parent-child structure at each one. Doing this exposed a real bug specific to this harness (three
+  services sharing one test classpath, one silently loading a sibling service's
+  `application.yml`), documented in the test class's own Javadoc rather than papered over.
 
 ## Fault-injection seam — all three points wired (M2)
 
