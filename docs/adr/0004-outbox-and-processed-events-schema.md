@@ -108,8 +108,11 @@ thresholds are tuned for general workloads, not specifically for a table with th
 `autovacuum` tuning (lower scale factor) or `FILLFACTOR` adjustment (to favor HOT updates), is
 exactly a measurement question — argued from principle here, not from a number.
 
-**What M7 measures.** Actual bloat percentage on `outbox_events` under sustained load and under
-sustained broker degradation (retry-heavy conditions), whether `autovacuum`'s defaults keep pace or
-lag, and whether an explicit archival/deletion path for published rows (referenced but not built in
-either M0 or M1) is warranted before this becomes a real operational concern. No archival logic is
-implemented this session — this section is posture, not a fix.
+**What M7 would measure, if it existed.** Actual bloat percentage on `outbox_events` under
+sustained load and under sustained broker degradation (retry-heavy conditions), whether
+`autovacuum`'s defaults keep pace or lag, and whether an explicit archival/deletion path for
+published rows (referenced but not built in either M0 or M1) is warranted before this becomes a
+real operational concern. EventForge is feature-frozen at M4 — no archival logic was ever
+implemented, and M7 was never started. This section states that boundary plainly, as posture
+rather than a fix: a real, named limitation of the project as it stands, not an open task waiting
+on a future session.

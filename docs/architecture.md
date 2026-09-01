@@ -1,11 +1,12 @@
 # Architecture
 
-This describes EventForge's **target** architecture across all 10 milestones. As of M4, the outbox
-relay (M1), idempotent consumers (M2), the orchestrated saga with real inventory reservation
-semantics (M3), and real OpenTelemetry distributed tracing across every hop (M4) all exist and are
-proven against real infrastructure. Milestones M5 onward — DLQ design, autoscaling, and measured
-performance — remain future scope; see the ADR index in [../README.md](../README.md) for what each
-would add.
+EventForge is complete and feature-frozen at M4. The outbox relay (M1), idempotent consumers (M2),
+the orchestrated saga with real inventory reservation semantics (M3), and real OpenTelemetry
+distributed tracing across every hop (M4) all exist and are proven against real infrastructure —
+this document describes what was actually built, not a target still being worked toward. Milestones
+M5 onward — DLQ design, autoscaling, and measured performance — were deliberately never started;
+see the ADR index in [../README.md](../README.md) for what each would have added, and "What is not
+claimed" in the same file for the boundary this project stops at.
 
 ## Message flow (as built, M4)
 

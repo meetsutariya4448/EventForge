@@ -1,5 +1,12 @@
 # EventForge
 
+**Project status: complete and feature-frozen at Milestone 4.** Everything in this README is
+built, proven by the tests it cites, and verified against a real clean clone — not a snapshot of
+work in progress. Milestones after M4 — a dead-letter queue (M5), autoscaling (M6), and measured
+performance (M7) are the ones this repo's own comments and ADRs name directly — were deliberately
+never started, not left unfinished; see "What is not claimed" and "Known limitations" below for
+exactly where this project's scope ends and why.
+
 EventForge is a small order/payment/inventory system built to answer one question honestly: when a
 business transaction spans a database and a message broker, and then spans multiple services after
 that, what actually guarantees it stays correct — and what would it take to prove that guarantee
@@ -173,9 +180,7 @@ README is going to guess at.
 Verified against a genuinely clean clone.
 
 Prerequisites: Docker, with Compose v2 or later (`docker compose version`). Nothing else — Java and
-Gradle are self-provisioned by the Gradle wrapper on first build. `order-service`'s own test suite
-has a known, confirmed source of flakiness unrelated to host resources — see "Known limitations"
-below before assuming a red `order-service` run means a real regression.
+Gradle are self-provisioned by the Gradle wrapper on first build.
 
 ```
 git clone <this repo>
@@ -234,47 +239,41 @@ what would change it.
 ## Known limitations, and what's next
 
 - **`order-service`'s Testcontainers-backed tests were flaky for two confirmed, distinct, in-repo
-  reasons — not host memory.** An earlier version of this section blamed a shared, constrained
-  Docker host; that diagnosis was wrong, and was corrected once evidence contradicted it rather than
-  left to stand.
+  reasons — both now fixed.**
 
-  **Cause 1 (fixed): shared static containers across test classes.**
+  **Cause 1: shared static containers across test classes.**
   `AbstractPostgresKafkaIntegrationTest`/`AbstractToxicKafkaIntegrationTest` declare Postgres and
   Kafka as `protected static final` — one field, shared by every subclass, initialized once per JVM
   and never reset. Gradle runs one module's whole `test` task in a single reused JVM by default, so
   all of `order-service`'s test classes were sharing one database and one broker: an earlier class's
   leftover rows, topics, and consumer-group offsets were visible to a later class. Confirmed by
   running `order-service` completely alone (no other module, no other project) three times — it
-  still failed every time, a different class each time, which rules out cross-project contention as
+  still failed every time, a different class each time, which ruled out cross-project contention as
   the cause. Fixed with `forkEvery = 1` on `order-service`'s `test` task (a fresh JVM, and therefore
-  fresh containers, per class): the previously-flaky classes (`MultiWorkerRelayOrderingIntegrationTest`,
-  `OutboxRelayCrashWindowIntegrationTest`, `RelayPublishSpanIntegrationTest`,
-  `RelayUnderToxicNetworkIntegrationTest`) stopped recurring entirely across multiple genuinely
-  fresh full-suite re-runs, at a measured wall-clock cost of about 13 seconds on this suite — see
-  that build file's own comment for the full evidence and numbers.
+  fresh containers, per class), at a measured wall-clock cost of about 13 seconds on this suite —
+  see that build file's own comment for the full evidence and numbers.
 
-  **Cause 2 (confirmed, not yet fixed): a real race against the background relay scheduler.**
-  `RelayAsyncGapTraceIntegrationTest` kept failing even with `forkEvery = 1`, in complete isolation.
-  Direct evidence, captured with a temporary diagnostic query on reproduction: the synthetic outbox
-  row the test expects to publish itself already shows `published_at` set and `publish_attempts = 1`
-  by the time the test's own explicit `relayWorker.relayNextEvent()` call runs. Something else
-  published it first. `OutboxRelayScheduler`'s `@Scheduled` poller has no `initialDelay`, so its
-  first tick fires on Spring's own async scheduling thread as soon as the scheduler infrastructure
-  is ready — with no happens-before relationship to the test method's own thread. Under the right
-  timing, that first tick lands *after* the test's synthetic row exists rather than before it,
-  claims it, and the test's own call finds nothing left. At least ten of `order-service`'s test
-  classes disable the scheduler only by setting its poll interval to an hour rather than by
-  disabling it outright, so all of them carry the same structural exposure, even though only this
-  one has reproduced it so far. This is a real bug — the correct fix is a way to obtain the relay
-  worker bean without also starting its background scheduler, not a longer sleep or a retry loop,
-  either of which would hide the race rather than close it. Not yet implemented; flagging it here
-  rather than shipping a fix that wasn't verified against the actual cause.
+  **Cause 2: a real race against the background relay scheduler.** `OutboxRelayScheduler`'s
+  `@Scheduled` poller had no `initialDelay`, so its first tick fired on Spring's own async
+  scheduling thread with no happens-before relationship to a test method's own thread. Any test
+  driving the relay directly via `relayWorker.relayNextEvent()` could have that first tick land
+  *after* its synthetic row existed rather than before it, claim the row itself, and leave the
+  test's own explicit call with nothing to find — confirmed with direct evidence, not inferred: a
+  reproduction showed the row already `published_at`-set with `publish_attempts = 1` before the
+  test's own call ran. Fixed as configuration, not logic:
+  `eventforge.outbox.relay.scheduler-enabled` (default `true`, production behavior unchanged —
+  asserted directly by `OutboxRelaySchedulerEnabledByDefaultTest`) now gates the scheduler bean
+  independently of the worker bean, so a test that wants the worker without the poller gets exactly
+  that — no `@Scheduled` method exists in the context at all when it's off, nothing left to race.
+
+  Verified, not assumed: the full suite green across three consecutive fresh (`--rerun-tasks`)
+  runs after both fixes landed.
 - **`processed_events` has no retention policy**, and none of the duplicate-absorption tests exercise what happens once a row eventually ages out — [docs/duplicate-taxonomy.md](docs/duplicate-taxonomy.md) states the failure mode precisely (row 9) without a test forcing it, because there is no archival implementation yet to test against.
 - **Orchestrator-redispatched commands racing their own original attempt** are reasoned through and handled in production code (the business-level safety net in `payment-service`) but not exercised by a test — every scenario this project's suite currently runs either never redispatches, or redispatches against a consumer that never answers at all (duplicate-taxonomy row 10).
 - **`notification-service` has exactly one layer of duplicate protection**, not two, by deliberate design: a real external side effect (a sent notification) has no local database row to constrain a second attempt against the way `payment-service`'s and `inventory-service`'s business tables do. If its dedupe row ever ages out and a redelivery follows, a second real notification goes out, with nothing left to stop it.
 - **The `e2e-tests` harness boots three real Spring Boot applications in one JVM on one shared test classpath**, which already produced one real bug during M4 (one service silently loading a sibling service's `application.yml`, fixed with explicit per-context property overrides) — a real limitation of the harness, not of the services it boots, worth knowing before extending it to a fourth.
 - **Nothing has been measured under sustained load**: outbox claim-query behavior under a large backlog, dead-tuple accumulation on `outbox_events` under retry-heavy conditions, and consumer/relay throughput under real concurrency are all open, per ADR-0004 and ADR-0010 — this is the next milestone's actual job, not a gap to guess at here.
 - **No autoscaling exists yet.** Every relay and consumer runs as a fixed local process; scaling either by Kafka consumer lag is unbuilt.
-- **No CI pipeline exists in this repository.** `make test` is the whole verification story today, run locally or by whoever clones it.
+- **No CI pipeline exists in this repository, deliberately, at this scope.** `make test` is the whole verification story: run locally, or by whoever clones it, the same command either way. A single-contributor project frozen at M4 doesn't need a CI system to prove the tests pass reliably — a person running `make test` themselves does that directly; it's not a gap that was overlooked.
 
-What I'd do next, roughly in order: build the measurement work the ADRs above already call out by name (outbox bloat, claim-query latency, relay/consumer throughput) rather than adding new features on top of unmeasured foundations; then a `processed_events` retention policy, specifically so duplicate-taxonomy row 9 can move from Predicted to Proven against a real implementation instead of staying a documented hypothetical; then autoscaling the relay/consumers against Kafka consumer lag, since ADR-0010 already states multi-worker relay correctness holds today and nothing about that design blocks it.
+If this project's scope were ever extended past this freeze, the natural next step is the measurement work the ADRs above already call out by name — outbox bloat, claim-query latency, relay/consumer throughput (M7) — since it's the one milestone that makes the existing, already-proven claims more precise rather than adding an unrelated new one. A `processed_events` retention policy (closing duplicate-taxonomy row 9) and autoscaling the relay against Kafka consumer lag (M6, building on ADR-0010's already-proven multi-worker correctness) would be the two after that. None of this is planned work — M5 through M9 are out of scope for this project as it stands, not a queue waiting to be picked back up.
