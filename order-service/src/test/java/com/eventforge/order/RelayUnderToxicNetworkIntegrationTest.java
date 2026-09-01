@@ -32,7 +32,7 @@ class RelayUnderToxicNetworkIntegrationTest extends AbstractToxicKafkaIntegratio
     static void tuning(DynamicPropertyRegistry registry) {
         // Same reasoning as the crash-window tests: the background poller must not race the
         // explicit relayNextEvent() calls below.
-        registry.add("eventforge.outbox.relay.poll-interval-ms", () -> "3600000");
+        registry.add("eventforge.outbox.relay.scheduler-enabled", () -> "false");
         // No backoff window to navigate around for this test's "recovers after the toxic clears"
         // assertion — avoids needing an injected Clock just to prove the seam works.
         registry.add("eventforge.outbox.relay.retry-backoff-ms", () -> "0");

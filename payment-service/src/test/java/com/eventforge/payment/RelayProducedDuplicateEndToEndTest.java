@@ -53,7 +53,7 @@ class RelayProducedDuplicateEndToEndTest extends AbstractPostgresKafkaIntegratio
         // every service's outbox_events schema is identical. The background scheduler must stay
         // off; only this test's explicit relayNextEvent() calls should drive it.
         registry.add("eventforge.outbox.relay.topic", () -> "orders.events");
-        registry.add("eventforge.outbox.relay.poll-interval-ms", () -> "3600000");
+        registry.add("eventforge.outbox.relay.scheduler-enabled", () -> "false");
     }
 
     @Autowired

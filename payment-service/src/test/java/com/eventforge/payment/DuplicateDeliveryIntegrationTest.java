@@ -43,7 +43,7 @@ class DuplicateDeliveryIntegrationTest extends AbstractPostgresKafkaIntegrationT
     static void tuning(DynamicPropertyRegistry registry) {
         // The real background relay must not drain payment-service's outbox mid-test and
         // interfere with the "exactly one outbox row" assertion below.
-        registry.add("eventforge.outbox.relay.poll-interval-ms", () -> "3600000");
+        registry.add("eventforge.outbox.relay.scheduler-enabled", () -> "false");
     }
 
     @Autowired

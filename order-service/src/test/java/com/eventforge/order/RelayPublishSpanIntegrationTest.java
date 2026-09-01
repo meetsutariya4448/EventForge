@@ -54,7 +54,7 @@ class RelayPublishSpanIntegrationTest extends AbstractPostgresKafkaIntegrationTe
 
     @DynamicPropertySource
     static void tuning(DynamicPropertyRegistry registry) {
-        registry.add("eventforge.outbox.relay.poll-interval-ms", () -> "3600000");
+        registry.add("eventforge.outbox.relay.scheduler-enabled", () -> "false");
         // TracingTestConfiguration's own Javadoc requirement: avoid a second, real SDK instance
         // pointlessly trying to export in the background alongside the in-memory one.
         registry.add("eventforge.tracing.enabled", () -> "false");

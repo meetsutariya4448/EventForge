@@ -44,7 +44,7 @@ class ConcurrentInventoryReservationIntegrationTest extends AbstractPostgresKafk
 
     @DynamicPropertySource
     static void tuning(DynamicPropertyRegistry registry) {
-        registry.add("eventforge.outbox.relay.poll-interval-ms", () -> "3600000");
+        registry.add("eventforge.outbox.relay.scheduler-enabled", () -> "false");
         registry.add("spring.datasource.hikari.maximum-pool-size", () -> String.valueOf(CONCURRENT_ORDERS + 5));
     }
 

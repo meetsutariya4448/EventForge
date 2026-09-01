@@ -52,7 +52,7 @@ class SamplingPropagationIntegrationTest extends AbstractPostgresKafkaIntegratio
 
     @DynamicPropertySource
     static void tuning(DynamicPropertyRegistry registry) {
-        registry.add("eventforge.outbox.relay.poll-interval-ms", () -> "3600000");
+        registry.add("eventforge.outbox.relay.scheduler-enabled", () -> "false");
         registry.add("eventforge.tracing.enabled", () -> "false");
         // ParentBased: the actual mechanism under test. A ratio below 1.0 would make an
         // independently-decided root span sometimes sampled anyway, muddying the assertion that

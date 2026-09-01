@@ -109,19 +109,20 @@ class OutboxRelayCrashWindowIntegrationTest {
         registry.add("eventforge.outbox.relay.kafka-send-timeout-ms", () -> "4000");
         registry.add("eventforge.outbox.relay.retry-backoff-ms", () -> String.valueOf(RETRY_BACKOFF.toMillis()));
         // These tests drive the relay exclusively via direct, synchronous relayNextEvent() calls
-        // for determinism (no wall-clock dependence). The background @Scheduled poller still
-        // exists (OutboxRelayAutoConfiguration wires it whenever the relay is enabled) and fires
-        // once immediately at context startup, harmlessly finding nothing — but it must not fire
-        // again during a test and race the test thread's own calls, especially during the
-        // pauseBroker() windows. Pushed out far past any test's runtime instead of disabled
-        // outright, since there's no supported way to omit just the scheduler bean here.
-        registry.add("eventforge.outbox.relay.poll-interval-ms", () -> "3600000");
+        // for determinism (no wall-clock dependence), especially during the pauseBroker() windows.
+        // The OutboxRelayScheduler bean (the background @Scheduled poller) is genuinely omitted
+        // from this context, not just delayed past the test's runtime — no @Scheduled method
+        // exists here at all, so there is nothing to race the test thread's own calls. See
+        // OutboxRelayAutoConfiguration and OutboxRelaySchedulerEnabledByDefaultTest, which proves
+        // this flag defaults to leaving the scheduler on in production.
+        registry.add("eventforge.outbox.relay.scheduler-enabled", () -> "false");
         // This class shares its injected MutableClock across the relay's own retry backoff and
         // the saga orchestrator's timeout deadlines (both read the same Clock bean). These tests
         // advance that clock by many seconds at a time to drive relay backoff windows, which would
         // also make any saga created here look "timed out" to a real-wall-clock-scheduled sweep —
-        // an unrelated M3 mechanism this M1 test has no business exercising. Pushed out the same
-        // way the relay's own background poller is above.
+        // an unrelated M3 mechanism this M1 test has no business exercising. No equivalent
+        // enabled-flag exists for the saga sweep, so this one is still pushed out far past any
+        // test's runtime rather than genuinely disabled.
         registry.add("eventforge.saga.sweep-interval-ms", () -> "3600000");
     }
 

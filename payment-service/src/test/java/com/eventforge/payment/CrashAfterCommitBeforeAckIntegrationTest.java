@@ -48,7 +48,7 @@ class CrashAfterCommitBeforeAckIntegrationTest extends AbstractPostgresKafkaInte
 
     @DynamicPropertySource
     static void tuning(DynamicPropertyRegistry registry) {
-        registry.add("eventforge.outbox.relay.poll-interval-ms", () -> "3600000");
+        registry.add("eventforge.outbox.relay.scheduler-enabled", () -> "false");
     }
 
     @Autowired

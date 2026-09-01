@@ -64,7 +64,7 @@ class MultiWorkerRelayOrderingIntegrationTest extends AbstractPostgresKafkaInteg
     static void tuning(DynamicPropertyRegistry registry) {
         // Same reasoning as the crash-window tests: the background @Scheduled poller must not
         // fire mid-test and race the explicitly-launched worker threads.
-        registry.add("eventforge.outbox.relay.poll-interval-ms", () -> "3600000");
+        registry.add("eventforge.outbox.relay.scheduler-enabled", () -> "false");
         // WORKER_COUNT concurrent relay transactions, plus the test's own JDBC calls, need more
         // headroom than Hikari's default pool size to avoid a false negative from pool exhaustion
         // rather than an actual claiming bug.

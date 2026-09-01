@@ -37,6 +37,8 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
@@ -52,11 +54,21 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers;
  * fully deterministic with no {@code Thread.sleep}/wall-clock polling for the relay's own state
  * changes. The one unavoidable bounded wait is consuming from the real Kafka broker itself, which
  * is genuinely asynchronous I/O.
+ *
+ * <p>That "never through the poller" claim used to be an assumption this class didn't actually
+ * enforce — the background scheduler was left running, racing these tests' own explicit calls on
+ * whichever row happened to be freshly written and unpublished. {@code scheduler-enabled=false}
+ * below is what makes the Javadoc above true rather than aspirational.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
 @Import(FaultInjectionTestConfiguration.class)
 class OutboxAndRelayIntegrationTest extends AbstractPostgresKafkaIntegrationTest {
+
+    @DynamicPropertySource
+    static void tuning(DynamicPropertyRegistry registry) {
+        registry.add("eventforge.outbox.relay.scheduler-enabled", () -> "false");
+    }
 
     @Autowired
     private MockMvc mockMvc;

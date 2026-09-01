@@ -40,7 +40,7 @@ class PoisonMessageIntegrationTest extends AbstractPostgresKafkaIntegrationTest 
         // duration, only on the eventual, bounded outcome.
         registry.add("eventforge.consumer.resilience.max-retries", () -> "2");
         registry.add("eventforge.consumer.resilience.backoff-ms", () -> "200");
-        registry.add("eventforge.outbox.relay.poll-interval-ms", () -> "3600000");
+        registry.add("eventforge.outbox.relay.scheduler-enabled", () -> "false");
     }
 
     @Autowired

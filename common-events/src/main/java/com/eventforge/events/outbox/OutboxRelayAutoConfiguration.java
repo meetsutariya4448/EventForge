@@ -59,7 +59,18 @@ public class OutboxRelayAutoConfiguration {
                 Duration.ofMillis(properties.kafkaSendTimeoutMs()));
     }
 
+    // Configuration, not logic: gated independently of the worker bean above, via
+    // eventforge.outbox.relay.scheduler-enabled (default true — production behavior is
+    // unchanged, asserted directly by OutboxRelaySchedulerEnabledByDefaultTest). A test that
+    // wants the worker bean without the background poller racing its own explicit calls sets
+    // this false; no @Scheduled method exists in the context at all when it's off, so there is
+    // nothing for @EnableScheduling to schedule — not a longer interval standing in for "off."
     @Bean
+    @ConditionalOnProperty(
+            prefix = "eventforge.outbox.relay",
+            name = "scheduler-enabled",
+            havingValue = "true",
+            matchIfMissing = true)
     public OutboxRelayScheduler outboxRelayScheduler(OutboxRelayWorker worker, OutboxRelayProperties properties) {
         return new OutboxRelayScheduler(worker, properties.batchCapPerPoll());
     }

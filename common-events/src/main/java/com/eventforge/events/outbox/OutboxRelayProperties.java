@@ -12,6 +12,17 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 @ConfigurationProperties(prefix = "eventforge.outbox.relay")
 public record OutboxRelayProperties(
         @DefaultValue("false") boolean enabled,
+        // Separate from `enabled`: `enabled` controls whether this service has a relay at all
+        // (the OutboxRelayWorker bean); this controls only whether that worker's background
+        // @Scheduled poller auto-starts. Defaults to true, matching production's only-ever
+        // behavior before this flag existed. Exists so a test that drives the worker directly
+        // and deterministically (relayWorker.relayNextEvent()) can get the bean without also
+        // racing the poller's own first tick, which has no initialDelay and therefore no
+        // happens-before relationship to the test method's own thread — see
+        // RelayAsyncGapTraceIntegrationTest and the diagnostic session that found this the hard
+        // way, by reproducing it with direct evidence rather than assuming a large poll interval
+        // was an adequate substitute for actually not scheduling anything.
+        @DefaultValue("true") boolean schedulerEnabled,
         String topic,
         @DefaultValue("3") int topicPartitions,
         @DefaultValue("1") short topicReplicationFactor,
