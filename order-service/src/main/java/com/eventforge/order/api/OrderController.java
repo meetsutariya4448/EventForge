@@ -19,6 +19,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -53,6 +54,12 @@ public class OrderController {
         this.tracer = tracer;
     }
 
+    /**
+     * Creating an order mutates state, so it is {@code OPERATOR}-only: a {@code VIEWER} can see
+     * what the system is doing but cannot make it do anything. That split is what makes
+     * "unauthorized mutation is denied" an enforced property rather than a UI convention.
+     */
+    @PreAuthorize("hasRole('OPERATOR')")
     @PostMapping
     public ResponseEntity<String> createOrder(
             @RequestBody CreateOrderRequest request,

@@ -29,6 +29,22 @@ spring:
 # downstream reacts to a notification being sent.
 
 eventforge:
+  # v2: accounts every service authenticates against. VIEWER reads; OPERATOR mutates.
+  #
+  # These are LOCAL DEVELOPMENT CREDENTIALS, not secrets. They are committed deliberately so
+  # `make up` and the test suite work from a clean clone with no out-of-band setup, and this
+  # project has no deployment, no real data and no real users to protect. The {noop} prefix says
+  # exactly that: the password is stored unencoded. A real deployment overrides these with
+  # {bcrypt} hashes supplied through the environment — the delegating encoder reads the prefix,
+  # so that swap needs no code change.
+  security:
+    users:
+      operator:
+        password: "{noop}operator"
+        roles: [OPERATOR]
+      viewer:
+        password: "{noop}viewer"
+        roles: [VIEWER]
   tracing:
     otlp-endpoint: http://localhost:4317
     sampling-probability: 1.0

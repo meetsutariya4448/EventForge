@@ -13,6 +13,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -109,11 +110,13 @@ class OrderIdempotencyIntegrationTest extends AbstractPostgresKafkaIntegrationTe
         String body = mapper.writeValueAsString(new CreateOrderRequest(1200, "SKU-NOHEADER", 1L));
 
         MvcResult first = mockMvc.perform(MockMvcRequestBuilders.post("/orders")
+                        .with(SecurityMockMvcRequestPostProcessors.httpBasic("operator", "operator"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(MockMvcResultMatchers.status().isCreated())
                 .andReturn();
         MvcResult second = mockMvc.perform(MockMvcRequestBuilders.post("/orders")
+                        .with(SecurityMockMvcRequestPostProcessors.httpBasic("operator", "operator"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(MockMvcResultMatchers.status().isCreated())
@@ -131,6 +134,7 @@ class OrderIdempotencyIntegrationTest extends AbstractPostgresKafkaIntegrationTe
     private org.springframework.test.web.servlet.ResultActions post(String idempotencyKey, String body)
             throws Exception {
         return mockMvc.perform(MockMvcRequestBuilders.post("/orders")
+                .with(SecurityMockMvcRequestPostProcessors.httpBasic("operator", "operator"))
                 .contentType(MediaType.APPLICATION_JSON)
                 .header("Idempotency-Key", idempotencyKey)
                 .content(body));

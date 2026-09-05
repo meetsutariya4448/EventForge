@@ -30,6 +30,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -129,6 +130,7 @@ class SamplingPropagationIntegrationTest extends AbstractPostgresKafkaIntegratio
 
     private String createOrderWithInboundTraceparent(String traceparent) throws Exception {
         String responseJson = mockMvc.perform(MockMvcRequestBuilders.post("/orders")
+                        .with(SecurityMockMvcRequestPostProcessors.httpBasic("operator", "operator"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .header("traceparent", traceparent)
                         .content(mapper.writeValueAsString(new CreateOrderRequest(1500, null, null))))

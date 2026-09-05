@@ -37,6 +37,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -165,7 +166,11 @@ class OutboxAndRelayIntegrationTest extends AbstractPostgresKafkaIntegrationTest
     }
 
     private UUID createOrder(long amountCents, String traceparent, String tracestate) throws Exception {
+        // Real credentials against the real filter chain, not mocked authentication: v2 made
+        // POST /orders an OPERATOR-only mutation, and what CI should exercise is the chain that
+        // actually ships.
         MockHttpServletRequestBuilder requestBuilder = MockMvcRequestBuilders.post("/orders")
+                .with(SecurityMockMvcRequestPostProcessors.httpBasic("operator", "operator"))
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(mapper.writeValueAsString(new CreateOrderRequest(amountCents, null, null)));
         if (traceparent != null) {

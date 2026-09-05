@@ -10,7 +10,9 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Base64;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -46,6 +48,13 @@ import org.springframework.test.context.DynamicPropertySource;
 class ConcurrentIdempotentOrderCreationIntegrationTest extends AbstractPostgresKafkaIntegrationTest {
 
     private static final int WORKER_COUNT = 16;
+
+    /**
+     * Real credentials on a real request — POST /orders is an OPERATOR-only mutation since v2's
+     * security step, and this test drives the actual server, so the actual filter chain runs.
+     */
+    private static final String OPERATOR_BASIC_AUTH = "Basic "
+            + Base64.getEncoder().encodeToString("operator:operator".getBytes(StandardCharsets.UTF_8));
 
     @DynamicPropertySource
     static void tuning(DynamicPropertyRegistry registry) {
@@ -89,6 +98,7 @@ class ConcurrentIdempotentOrderCreationIntegrationTest extends AbstractPostgresK
                     HttpRequest request = HttpRequest.newBuilder()
                             .uri(URI.create("http://localhost:" + port + "/orders"))
                             .header("Content-Type", "application/json")
+                            .header("Authorization", OPERATOR_BASIC_AUTH)
                             .header("Idempotency-Key", key)
                             .timeout(Duration.ofSeconds(30))
                             .POST(HttpRequest.BodyPublishers.ofString(body))

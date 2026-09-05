@@ -27,6 +27,10 @@ dependencies {
     // own starters (spring-boot-starter-jdbc, spring-boot-starter-kafka); common-events must not
     // force any of this onto a non-Spring or non-Kafka consumer.
     compileOnly("org.springframework.boot:spring-boot-autoconfigure")
+    // v2: EventForgeSecurityAutoConfiguration. compileOnly for the same reason as the rest of
+    // this block — a consumer that isn't a Spring web service must not be forced to carry a
+    // security filter chain; the four services bring it themselves via the service convention.
+    compileOnly("org.springframework.boot:spring-boot-starter-security")
     compileOnly("org.springframework:spring-context")
     compileOnly("org.springframework:spring-tx")
     compileOnly("org.springframework:spring-jdbc")

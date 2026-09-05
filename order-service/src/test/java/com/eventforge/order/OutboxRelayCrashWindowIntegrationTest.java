@@ -46,6 +46,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -399,6 +400,7 @@ class OutboxRelayCrashWindowIntegrationTest {
 
     private UUID createOrder(long amountCents) throws Exception {
         String responseJson = mockMvc.perform(MockMvcRequestBuilders.post("/orders")
+                        .with(SecurityMockMvcRequestPostProcessors.httpBasic("operator", "operator"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(mapper.writeValueAsString(new CreateOrderRequest(amountCents, null, null))))
                 .andExpect(MockMvcResultMatchers.status().isCreated())

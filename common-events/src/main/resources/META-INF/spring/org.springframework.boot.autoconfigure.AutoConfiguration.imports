@@ -4,3 +4,4 @@ com.eventforge.events.outbox.OutboxRelayAutoConfiguration
 com.eventforge.events.consumer.ProcessedEventStoreAutoConfiguration
 com.eventforge.events.consumer.KafkaConsumerResilienceAutoConfiguration
 com.eventforge.events.tracing.TracingAutoConfiguration
+com.eventforge.events.security.EventForgeSecurityAutoConfiguration

@@ -194,6 +194,15 @@ class TraceContinuityIntegrationTest {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create("http://localhost:" + orderCtx.getEnvironment().getProperty("local.server.port") + "/orders"))
                 .header("Content-Type", "application/json")
+                // POST /orders is an OPERATOR-only mutation since v2's security step; this test
+                // drives the real server, so it presents real credentials rather than bypassing
+                // the filter chain.
+                .header(
+                        "Authorization",
+                        "Basic "
+                                + java.util.Base64.getEncoder()
+                                        .encodeToString("operator:operator"
+                                                .getBytes(java.nio.charset.StandardCharsets.UTF_8)))
                 .POST(HttpRequest.BodyPublishers.ofString("{\"amountCents\":2500}"))
                 .build();
         HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
