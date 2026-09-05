@@ -53,6 +53,17 @@ eventforge:
   tracing:
     otlp-endpoint: http://localhost:4317
     sampling-probability: 1.0
+  # v2 WS1: Idempotency-Key handling on POST /orders. Spelled out rather than left to the
+  # record's defaults so the two values with real operational consequences are visible here.
+  idempotency:
+    # After this window a retry is treated as a new request and creates a second order — the
+    # same honest consequence ADR-0012 records for processed_events retention. Not tuned (R2).
+    ttl: 24h
+    # How long a caller blocks behind another transaction's in-flight claim before getting a
+    # retryable 409. This is a connection-pool-exhaustion bound, not a patience setting: a
+    # blocked request pins a servlet thread and a pooled connection for its whole duration.
+    # See ADR-0021 for the cost and the deferred non-blocking alternative.
+    lock-timeout: 1s
 
 logging:
   structured:

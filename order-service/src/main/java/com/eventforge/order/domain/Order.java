@@ -11,6 +11,14 @@ import java.util.UUID;
 @Table(name = "orders")
 public class Order {
 
+    /**
+     * The status every order is created with. Named rather than repeated as a literal because
+     * v2's idempotency layer has to render a newly-created order's response <em>before</em> the
+     * row exists (the claim is the first statement of the creating transaction), so the value is
+     * now needed in two places and must not be able to drift between them.
+     */
+    public static final String STATUS_PENDING = "PENDING";
+
     @Id
     @Column(name = "order_id")
     private UUID orderId;
