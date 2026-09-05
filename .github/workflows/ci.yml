@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A newer push to the same ref supersedes an in-flight run; the older one is wasted work.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      # One module's failure must not cancel the others — a partial matrix tells us nothing
+      # about whether the rest regressed.
+      fail-fast: false
+      matrix:
+        include:
+          - name: shared
+            targets: ":common-events:test :common-testing:test"
+          # order-service gets its own runner: forkEvery=1 means a fresh JVM (and therefore a
+          # fresh Postgres+Kafka container pair) per test class, across 14 classes. That setting
+          # was chosen on measured evidence — see order-service/build.gradle.kts — and must not
+          # be relaxed to make CI faster.
+          - name: order
+            targets: ":order-service:test"
+          - name: payment
+            targets: ":payment-service:test"
+          - name: inv-notif
+            targets: ":inventory-service:test :notification-service:test"
+          - name: e2e
+            targets: ":e2e-tests:test"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Started before the JDK/Gradle setup steps so the image download overlaps with them
+      # rather than serializing in front of the tests. The wait-loop below is what makes this
+      # deterministic — Testcontainers would pull these itself, but then the pull would happen
+      # inside a test's own startup timeout.
+      - name: Start pulling pinned container images
+        run: |
+          nohup docker pull postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685 > /tmp/pull-postgres.log 2>&1 &
+          nohup docker pull apache/kafka:4.3.1 > /tmp/pull-kafka.log 2>&1 &
+          echo "pulls started"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # Caches ~/.gradle (dependencies, wrapper dists) only. It deliberately does NOT cache
+      # build/ directories: a restored build/ would let Gradle mark test tasks UP-TO-DATE and
+      # skip them entirely, producing a green run that executed nothing. That exact failure was
+      # hit during M4 verification ("38 up-to-date, 1 executed"), so it is guarded here by
+      # never restoring test outputs in the first place.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Wait for image pulls
+        run: |
+          for image in \
+            postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685 \
+            apache/kafka:4.3.1
+          do
+            echo "waiting for $image"
+            for _ in $(seq 1 120); do
+              if docker image inspect "$image" > /dev/null 2>&1; then
+                echo "  present"
+                break
+              fi
+              sleep 2
+            done
+            docker image inspect "$image" > /dev/null 2>&1 || {
+              echo "image never became available: $image" >&2
+              cat /tmp/pull-*.log >&2 || true
+              exit 1
+            }
+          done
+
+      - name: Run tests
+        run: ./gradlew ${{ matrix.targets }}
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ matrix.name }}
+          path: |
+            **/build/reports/tests
+            **/build/test-results
+          retention-days: 7
