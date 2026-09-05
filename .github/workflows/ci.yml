@@ -48,7 +48,7 @@ jobs:
           nohup docker pull apache/kafka:4.3.1 > /tmp/pull-kafka.log 2>&1 &
           echo "pulls started"
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
