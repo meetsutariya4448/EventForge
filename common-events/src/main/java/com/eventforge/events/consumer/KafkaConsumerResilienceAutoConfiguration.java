@@ -33,8 +33,14 @@ import org.springframework.util.backoff.FixedBackOff;
 @ConditionalOnClass(DefaultErrorHandler.class)
 public class KafkaConsumerResilienceAutoConfiguration {
 
+    // Conditional on its own concrete type, not on ConsumerRecordRecoverer: as of v2 WS3 this is
+    // no longer necessarily the recoverer the error handler uses. FailureCaptureAutoConfiguration
+    // registers a @Primary DurableFailureRecoverer that composes this one, so both beans exist and
+    // this stays the thing that writes the ERROR line and counts. Conditioning on the interface
+    // would have made this bean disappear the moment the durable recoverer arrived, silently
+    // removing the log line and breaking the counter PoisonMessageIntegrationTest asserts on.
     @Bean
-    @ConditionalOnMissingBean(ConsumerRecordRecoverer.class)
+    @ConditionalOnMissingBean(LoggingConsumerRecordRecoverer.class)
     public LoggingConsumerRecordRecoverer consumerRecordRecoverer() {
         return new LoggingConsumerRecordRecoverer();
     }

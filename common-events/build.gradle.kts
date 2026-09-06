@@ -31,6 +31,12 @@ dependencies {
     // this block — a consumer that isn't a Spring web service must not be forced to carry a
     // security filter chain; the four services bring it themselves via the service convention.
     compileOnly("org.springframework.boot:spring-boot-starter-security")
+    // v2 WS3: FailedMessageController. The failed-message endpoints live here rather than in one
+    // service because failure data is per-service — every service owns its own database and none
+    // may read another's — so all four expose the same contract instead of an aggregator reaching
+    // across a boundary this project does not allow crossing.
+    compileOnly("org.springframework:spring-web")
+    compileOnly("org.springframework:spring-webmvc")
     compileOnly("org.springframework:spring-context")
     compileOnly("org.springframework:spring-tx")
     compileOnly("org.springframework:spring-jdbc")
