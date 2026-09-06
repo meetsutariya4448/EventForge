@@ -1,0 +1,14 @@
+node_modules/
+dist/
+
+# Playwright artifacts. Traces are retained on failure for local debugging and are not worth
+# committing — they are large and specific to one run.
+test-results/
+playwright-report/
+blob-report/
+.playwright/
+
+# Generated from openapi/order-service.json by `npm run generate:types`. Committed deliberately
+# rather than ignored: a fresh clone typechecks without running a generator first, and a diff in
+# this file during review is a visible signal that the API contract changed.
+!src/api/schema.ts

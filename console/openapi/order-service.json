@@ -1,0 +1,318 @@
+{
+  "openapi" : "3.1.0",
+  "info" : {
+    "title" : "OpenAPI definition",
+    "version" : "v0"
+  },
+  "servers" : [ {
+    "url" : "http://localhost",
+    "description" : "Generated server url"
+  } ],
+  "paths" : {
+    "/orders" : {
+      "post" : {
+        "tags" : [ "order-controller" ],
+        "operationId" : "createOrder",
+        "parameters" : [ {
+          "name" : "Idempotency-Key",
+          "in" : "header",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "traceparent",
+          "in" : "header",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "tracestate",
+          "in" : "header",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/CreateOrderRequest"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/failed-messages/{id}/replay" : {
+      "post" : {
+        "tags" : [ "failed-message-controller" ],
+        "operationId" : "replay",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/operator-actions" : {
+      "get" : {
+        "tags" : [ "operator-action-controller" ],
+        "operationId" : "list",
+        "parameters" : [ {
+          "name" : "targetType",
+          "in" : "query",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "targetId",
+          "in" : "query",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "name" : "limit",
+          "in" : "query",
+          "required" : false,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int32",
+            "default" : 100
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "array",
+                  "items" : {
+                    "$ref" : "#/components/schemas/OperatorAction"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/failed-messages" : {
+      "get" : {
+        "tags" : [ "failed-message-controller" ],
+        "operationId" : "list_1",
+        "parameters" : [ {
+          "name" : "openOnly",
+          "in" : "query",
+          "required" : false,
+          "schema" : {
+            "type" : "boolean",
+            "default" : true
+          }
+        }, {
+          "name" : "limit",
+          "in" : "query",
+          "required" : false,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int32",
+            "default" : 100
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "array",
+                  "items" : {
+                    "$ref" : "#/components/schemas/FailedMessageRow"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/failed-messages/{id}" : {
+      "get" : {
+        "tags" : [ "failed-message-controller" ],
+        "operationId" : "get",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/FailedMessageRow"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components" : {
+    "schemas" : {
+      "CreateOrderRequest" : {
+        "type" : "object",
+        "properties" : {
+          "amountCents" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "sku" : {
+            "type" : "string"
+          },
+          "quantity" : {
+            "type" : "integer",
+            "format" : "int64"
+          }
+        }
+      },
+      "OperatorAction" : {
+        "type" : "object",
+        "properties" : {
+          "operatorActionId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "actor" : {
+            "type" : "string"
+          },
+          "actionType" : {
+            "type" : "string"
+          },
+          "targetType" : {
+            "type" : "string"
+          },
+          "targetId" : {
+            "type" : "string"
+          },
+          "status" : {
+            "type" : "string",
+            "enum" : [ "DISPATCHED", "SUCCEEDED", "FAILED" ]
+          },
+          "dispatchedAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "completedAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "detail" : {
+            "type" : "string"
+          }
+        }
+      },
+      "FailedMessageRow" : {
+        "type" : "object",
+        "properties" : {
+          "failedMessageId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "consumerGroup" : {
+            "type" : "string"
+          },
+          "topic" : {
+            "type" : "string"
+          },
+          "partition" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "offset" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "messageKey" : {
+            "type" : "string"
+          },
+          "payload" : {
+            "type" : "string"
+          },
+          "headersJson" : {
+            "type" : "string"
+          },
+          "eventId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "eventType" : {
+            "type" : "string"
+          },
+          "failureReason" : {
+            "type" : "string"
+          },
+          "status" : {
+            "type" : "string",
+            "enum" : [ "CAPTURED", "REPLAY_REQUESTED", "REPLAYED", "ABANDONED" ]
+          },
+          "capturedAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "replayAttempts" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "lastReplayAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "lastReplayError" : {
+            "type" : "string"
+          }
+        }
+      }
+    }
+  }
+}

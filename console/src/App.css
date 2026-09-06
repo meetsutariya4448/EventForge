@@ -1,0 +1,219 @@
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #6b6b6b;
+  --line: #e0e0e0;
+  --surface: #f7f7f7;
+  --accent: #1f5fa9;
+  --danger: #b3261e;
+  --ok: #1b6b3a;
+  --warn: #8a5a00;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181c;
+    --fg: #e8e8e8;
+    --muted: #a0a0a0;
+    --line: #30343a;
+    --surface: #1e2126;
+    --accent: #6ea8f0;
+    --danger: #f2857c;
+    --ok: #7fd39b;
+    --warn: #e0b062;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+main {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.top {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.top h1 {
+  font-size: 1.1rem;
+  margin: 0;
+  margin-right: auto;
+}
+
+section {
+  margin-bottom: 2.5rem;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.section-header h2 {
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 0;
+  margin-right: auto;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--muted);
+}
+
+button {
+  font: inherit;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Wide tables scroll in their own box rather than making the page scroll sideways. */
+.scroll {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.45rem 0.7rem;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+th {
+  background: var(--surface);
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Failure reasons are long stack-trace-ish strings; truncate but keep them readable on hover. */
+.reason {
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pill {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+.pill-captured,
+.pill-dispatched {
+  color: var(--warn);
+}
+
+.pill-replayed,
+.pill-succeeded {
+  color: var(--ok);
+}
+
+.pill-abandoned,
+.pill-failed {
+  color: var(--danger);
+}
+
+.empty,
+.hint {
+  color: var(--muted);
+}
+
+.error,
+.result-error,
+.result-forbidden {
+  color: var(--danger);
+}
+
+.result-accepted {
+  color: var(--ok);
+}
+
+.result-conflict {
+  color: var(--warn);
+}
+
+.signin {
+  max-width: 22rem;
+  margin: 6rem auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0 1.5rem;
+}
+
+.signin h1 {
+  font-size: 1.15rem;
+  margin: 0 0 0.5rem;
+}
+
+.signin label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  color: var(--muted);
+}
+
+.signin input {
+  font: inherit;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.hint {
+  font-size: 0.8rem;
+}
