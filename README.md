@@ -301,7 +301,34 @@ them rather than into them, and it is where anything dated after the freeze belo
   here; the effect is once because the republished bytes carry the original `eventId` into the
   dedupe ledger.
 
-What v2 does not have yet: an operator console (the endpoints exist, no UI consumes them), and no
-event streaming or dashboards. Failure data is per-service by construction — no service may read
-another's database — so each service exposes its own `/failed-messages`, and there is no
+- **An audit trail for operator actions.** A replay writes an `operator_action` row recording who
+  asked, and it is committed *before* the replay runs — the same two-phase shape as `saga_step`. An
+  action that crashes halfway therefore leaves a visibly unresolved row rather than no row at all,
+  which is the case an audit trail exists for. The actor comes from the authenticated principal,
+  never from the request body.
+- **An operator console** (`console/`) — React, Vite, TypeScript in strict mode, with its API types
+  generated from the OpenAPI description rather than hand-written. It lists captured failures,
+  replays them, and shows the audit trail.
+
+### How the console avoids lying about the API
+
+The types come from `console/openapi/order-service.json`, which is committed so that generating
+them is a pure file transform rather than something requiring the whole stack to be running — a
+generation step people skip is how a "generated" client quietly becomes a stale hand-written one.
+`OpenApiSpecSnapshotTest` then fails if that committed file stops matching what the service serves,
+so the trade does not just move the drift somewhere less visible.
+
+The replay button is rendered for every user, including a `VIEWER` who cannot use it. Hiding it
+would make the console the thing enforcing authorization; instead the server refuses the request
+and the console displays the refusal. `replay-authorization.spec.ts` asserts that against the real
+service — a Playwright test with a mocked API would only prove that its own mock returns `403`.
+
+What v2 does not have: event streaming (SSE) and dashboards, both deliberately out of scope.
+Failure data is per-service by construction — no service may read another's database — so each
+service exposes its own `/failed-messages`, the console reads order-service's, and there is no
 cross-service view of failures anywhere in the system.
+
+The console's Playwright suite is **not** run by CI. It needs Docker infra plus four Spring Boot
+processes, which is a heavier and more fragile CI job than it would be worth; CI typechecks, lints
+and builds the console instead. Run the browser tests locally with `make up`, then `npm run e2e`
+in `console/`. This is stated plainly because "CI is green" has never covered them.

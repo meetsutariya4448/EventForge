@@ -95,3 +95,43 @@ jobs:
             **/build/reports/tests
             **/build/test-results
           retention-days: 7
+
+  # Separate job, not a matrix entry: this needs Node rather than a JDK, and no Docker images at
+  # all, so sharing the Java job's setup would mean every console change waits on a Testcontainers
+  # toolchain it does not use.
+  #
+  # Scope is deliberately typecheck + build. The console's Playwright suite runs against the real
+  # order-service (see console/playwright.config.ts for why it is not mocked), which means Docker
+  # infra plus four Spring Boot processes — a heavier, slower and more failure-prone CI job than
+  # what it would buy. It is a documented local step instead, and this is stated plainly rather
+  # than left for someone to discover that "CI is green" never covered the browser tests.
+  console:
+    name: console
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      - name: Install dependencies
+        working-directory: console
+        run: npm ci
+
+      # Strict mode is on (console/tsconfig.app.json), so this is a real gate rather than a
+      # formality — it is what catches the console reading a field the API no longer returns.
+      - name: Typecheck
+        working-directory: console
+        run: npm run typecheck
+
+      - name: Lint
+        working-directory: console
+        run: npm run lint
+
+      - name: Build
+        working-directory: console
+        run: npm run build
