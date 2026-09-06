@@ -50,12 +50,18 @@ class RecovererFailureLeavesOffsetUncommittedIntegrationTest extends AbstractPos
         registry.add("eventforge.consumer.resilience.max-retries", () -> "1");
         registry.add("eventforge.consumer.resilience.backoff-ms", () -> "100");
         registry.add("eventforge.outbox.relay.scheduler-enabled", () -> "false");
+        // This test must be the ONLY recoverer in play. WS3's DurableFailureRecoverer is itself
+        // registered @Primary, and two primaries of one type is an error — so the thing this spike
+        // was run to justify is switched off while the spike re-proves the framework behaviour it
+        // rests on. Without this the error handler would pick the durable recoverer, which does
+        // not throw, and the test would measure nothing.
+        registry.add("eventforge.failure-capture.enabled", () -> "false");
     }
 
     /**
      * Stands in for a failure store that is unavailable: the recoverer is reached and then fails.
-     * Registered as a {@link ConsumerRecordRecoverer} bean, which suppresses the production
-     * {@code LoggingConsumerRecordRecoverer} via its {@code @ConditionalOnMissingBean}.
+     * {@code @Primary} so the error handler chooses it over the {@code LoggingConsumerRecordRecoverer}
+     * that auto-configuration always registers.
      */
     static class ThrowingRecoverer implements ConsumerRecordRecoverer {
 
@@ -75,6 +81,7 @@ class RecovererFailureLeavesOffsetUncommittedIntegrationTest extends AbstractPos
     @TestConfiguration
     static class ThrowingRecovererConfiguration {
         @Bean
+        @org.springframework.context.annotation.Primary
         ThrowingRecoverer throwingRecoverer() {
             return new ThrowingRecoverer();
         }
