@@ -215,7 +215,7 @@ reliance on one, across different orders or across the cluster as a whole.
   services sharing one test classpath, one silently loading a sibling service's
   `application.yml`), documented in the test class's own Javadoc rather than papered over.
 
-## Fault-injection seam — all three points wired (M2)
+## Fault-injection seam — every point wired (three in M2, two more in v2 WS3)
 
 `FaultInjectionPoint.AFTER_DB_COMMIT_BEFORE_KAFKA_PUBLISH` fires in `OrderController`, right after
 the order+outbox transaction commits — a real crash here would leave a durable, unpublished outbox
@@ -231,3 +231,13 @@ right after the consumer transaction commits and before `ack.acknowledge()` — 
 leaves the offset uncommitted, so the broker redelivers the already-processed event, and it's the
 dedupe insert (not offset position) that keeps the resulting redelivery a no-op. Proven by
 `CrashAfterCommitBeforeAckIntegrationTest`.
+
+v2 WS3 added two more, both in `DurableFailureRecoverer` and both about the same ordering:
+`FaultInjectionPoint.BEFORE_FAILURE_CAPTURE` fires before a failed record is written to
+`failed_messages` — a crash here must leave the offset uncommitted, so the record is redelivered
+rather than skipped with nothing remembering it, and the partition resumes on its own once the
+store is reachable (`FailureStoreUnavailableIntegrationTest`).
+`FaultInjectionPoint.AFTER_FAILURE_CAPTURE_BEFORE_OFFSET_ADVANCE` fires after that row is committed
+and before the offset moves past the record; a crash here leaves exactly one captured row after
+redelivery, because the capture's own `ON CONFLICT DO NOTHING` is keyed on the record's physical
+coordinates rather than on an `event_id` a poison record may not have.

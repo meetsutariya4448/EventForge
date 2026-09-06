@@ -235,6 +235,8 @@ what would change it.
 - [0018](docs/adr/0018-jaeger-as-the-collector.md) — Jaeger receives OTLP directly; no separate collector container, given this project's scale.
 - [0019](docs/adr/0019-sampling-policy-and-parent-based-propagation.md) — Always-sample policy, parent-based propagation, and an amendment documenting a real sampling-flag bug the project's own test caught.
 - [0020](docs/adr/0020-correlation-id-vs-trace-id.md) — `correlationId` and trace ID are never derived from one another: one is business-durable and always present, the other is observability tooling that can be sampled away.
+- [0021](docs/adr/0021-http-idempotency-single-transaction-claim.md) — The idempotency claim is the first statement of the order-creating transaction, so claim and effect commit together; states the blocking design's connection-pool cost plainly rather than presenting it as free.
+- [0022](docs/adr/0022-replay-publishes-outside-the-outbox.md) — Replaying a captured failure publishes outside the outbox, and the `OutboxOnlyPublishingRule` allowlist widens to permit it; records why a replay is not a dual write and why the alternatives were worse.
 
 ## Known limitations, and what's next
 
@@ -274,6 +276,32 @@ what would change it.
 - **The `e2e-tests` harness boots three real Spring Boot applications in one JVM on one shared test classpath**, which already produced one real bug during M4 (one service silently loading a sibling service's `application.yml`, fixed with explicit per-context property overrides) — a real limitation of the harness, not of the services it boots, worth knowing before extending it to a fourth.
 - **Nothing has been measured under sustained load**: outbox claim-query behavior under a large backlog, dead-tuple accumulation on `outbox_events` under retry-heavy conditions, and consumer/relay throughput under real concurrency are all open, per ADR-0004 and ADR-0010 — this is the next milestone's actual job, not a gap to guess at here.
 - **No autoscaling exists yet.** Every relay and consumer runs as a fixed local process; scaling either by Kafka consumer lag is unbuilt.
-- **No CI pipeline exists in this repository, deliberately, at this scope.** `make test` is the whole verification story: run locally, or by whoever clones it, the same command either way. A single-contributor project frozen at M4 doesn't need a CI system to prove the tests pass reliably — a person running `make test` themselves does that directly; it's not a gap that was overlooked.
 
 If this project's scope were ever extended past this freeze, the natural next step is the measurement work the ADRs above already call out by name — outbox bloat, claim-query latency, relay/consumer throughput (M7) — since it's the one milestone that makes the existing, already-proven claims more precise rather than adding an unrelated new one. A `processed_events` retention policy (closing duplicate-taxonomy row 9) and autoscaling the relay against Kafka consumer lag (M6, building on ADR-0010's already-proven multi-worker correctness) would be the two after that. None of this is planned work — M5 through M9 are out of scope for this project as it stands, not a queue waiting to be picked back up.
+
+## v2
+
+M0–M4 above are frozen and unchanged. v2 is a separately-numbered second chapter, built on top of
+them rather than into them, and it is where anything dated after the freeze belongs.
+
+- **CI.** `.github/workflows/ci.yml` runs the suite as a five-job matrix on every push and pull
+  request. This replaces an earlier claim here that no CI existed deliberately; that was true at
+  the freeze and is not true now.
+- **HTTP idempotency on `POST /orders`** — the claim is the first statement of the order-creating
+  transaction, so claim and effect commit together ([ADR-0021](docs/adr/0021-http-idempotency-single-transaction-claim.md)).
+- **Authentication and role-based authorization** across all four services — stateless HTTP Basic,
+  seeded `OPERATOR` and `VIEWER` roles, mutations restricted to `OPERATOR` and asserted against the
+  real filter chain rather than with mocked authentication. The seeded credentials are unencoded
+  `{noop}` development values in `application.yml` — what is proven here is that the authorization
+  rule holds, not that the credential handling is fit for a deployment.
+- **Durable failure capture and replay.** A record that exhausts its retries is written to
+  `failed_messages` before its consumer offset is allowed to advance, and an operator can replay it
+  ([ADR-0022](docs/adr/0022-replay-publishes-outside-the-outbox.md),
+  [runbook](docs/runbooks/failed-message-replay.md)). Replay is at-least-once like everything else
+  here; the effect is once because the republished bytes carry the original `eventId` into the
+  dedupe ledger.
+
+What v2 does not have yet: an operator console (the endpoints exist, no UI consumes them), and no
+event streaming or dashboards. Failure data is per-service by construction — no service may read
+another's database — so each service exposes its own `/failed-messages`, and there is no
+cross-service view of failures anywhere in the system.
