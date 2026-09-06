@@ -1,5 +1,8 @@
 package com.eventforge.events.failure;
 
+import com.eventforge.events.audit.AuditedFailedMessageReplayer;
+import com.eventforge.events.audit.OperatorActionController;
+import com.eventforge.events.audit.OperatorActionStore;
 import com.eventforge.events.consumer.LoggingConsumerRecordRecoverer;
 import com.eventforge.events.fault.FaultInjector;
 import java.time.Clock;
@@ -86,12 +89,38 @@ public class FailureCaptureAutoConfiguration {
                 store, kafkaTemplate, transactionManager, Duration.ofMillis(properties.kafkaSendTimeoutMs()));
     }
 
-    // Only where there is an HTTP layer to serve it from. The endpoints are an operator surface,
+    @Bean
+    @ConditionalOnMissingBean(OperatorActionStore.class)
+    public OperatorActionStore operatorActionStore(JdbcTemplate jdbcTemplate, Clock clock) {
+        return new OperatorActionStore(jdbcTemplate, clock);
+    }
+
+    // Replay is only reachable through this wrapper, never through the bare replayer: an operator
+    // action that can be performed without being recorded makes the audit trail advisory.
+    @Bean
+    @ConditionalOnMissingBean(AuditedFailedMessageReplayer.class)
+    public AuditedFailedMessageReplayer auditedFailedMessageReplayer(
+            FailedMessageReplayer replayer,
+            OperatorActionStore auditStore,
+            FaultInjector faultInjector,
+            PlatformTransactionManager transactionManager) {
+        return new AuditedFailedMessageReplayer(replayer, auditStore, faultInjector, transactionManager);
+    }
+
+    // Only where there is an HTTP layer to serve them from. The endpoints are an operator surface,
     // not part of capture itself: a service running without a web server still captures.
     @Bean
     @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
     @ConditionalOnMissingBean(FailedMessageController.class)
-    public FailedMessageController failedMessageController(FailedMessageStore store, FailedMessageReplayer replayer) {
+    public FailedMessageController failedMessageController(
+            FailedMessageStore store, AuditedFailedMessageReplayer replayer) {
         return new FailedMessageController(store, replayer);
+    }
+
+    @Bean
+    @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
+    @ConditionalOnMissingBean(OperatorActionController.class)
+    public OperatorActionController operatorActionController(OperatorActionStore store) {
+        return new OperatorActionController(store);
     }
 }

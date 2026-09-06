@@ -2,6 +2,8 @@
 build/
 out/
 bin/
+# Kotlin build-tool session state, written by buildSrc's Kotlin DSL compilation.
+.kotlin/
 !gradle/wrapper/gradle-wrapper.jar
 
 .idea/

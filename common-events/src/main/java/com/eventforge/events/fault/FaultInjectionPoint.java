@@ -27,5 +27,12 @@ public enum FaultInjectionPoint {
      * record (v2 WS3). Crashing here must leave exactly one captured row after redelivery, not a
      * second copy — the capture's own idempotency, on the record's physical coordinates.
      */
-    AFTER_FAILURE_CAPTURE_BEFORE_OFFSET_ADVANCE
+    AFTER_FAILURE_CAPTURE_BEFORE_OFFSET_ADVANCE,
+
+    /**
+     * After an operator action is recorded as DISPATCHED and committed, before the action itself
+     * runs (v2 WS2). Crashing here must leave a visibly unresolved audit row rather than no row at
+     * all — the case the two-phase audit shape exists for.
+     */
+    AFTER_AUDIT_DISPATCH_BEFORE_ACTION
 }

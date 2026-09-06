@@ -1,5 +1,7 @@
 package com.eventforge.events.failure;
 
+import com.eventforge.events.audit.AuditedFailedMessageReplayer;
+import java.security.Principal;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
@@ -34,9 +36,9 @@ import org.springframework.web.bind.annotation.RestController;
 public class FailedMessageController {
 
     private final FailedMessageStore store;
-    private final FailedMessageReplayer replayer;
+    private final AuditedFailedMessageReplayer replayer;
 
-    public FailedMessageController(FailedMessageStore store, FailedMessageReplayer replayer) {
+    public FailedMessageController(FailedMessageStore store, AuditedFailedMessageReplayer replayer) {
         this.store = store;
         this.replayer = replayer;
     }
@@ -58,11 +60,15 @@ public class FailedMessageController {
      * Republishing a message changes what the system does, so it is {@code OPERATOR}-only. A
      * {@code VIEWER} can see the failure and can not act on it — enforced here, not by the console
      * choosing which buttons to draw.
+     *
+     * <p>The actor is read from the authenticated {@link Principal}, never from anything the
+     * caller sent. An audit trail a caller can put another name on is worse than no audit trail,
+     * because it still looks authoritative.
      */
     @PreAuthorize("hasRole('OPERATOR')")
     @PostMapping("/{id}/replay")
-    public ResponseEntity<String> replay(@PathVariable("id") UUID id) {
-        return switch (replayer.replay(id)) {
+    public ResponseEntity<String> replay(@PathVariable("id") UUID id, Principal principal) {
+        return switch (replayer.replay(id, principal.getName())) {
             case REPLAYED -> ResponseEntity.accepted().body("Replayed to the original topic");
             // Already replayed, abandoned, unknown, or being claimed by someone else right now.
             // A conflict rather than a 404: the caller's request was understood, it just no longer
