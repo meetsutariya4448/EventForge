@@ -38,4 +38,12 @@ dependencies {
 // concurrent operations), so paying it once per class instead of once per JVM barely registers.
 tasks.test {
     forkEvery = 1
+
+    // Tests run in a FORKED JVM, so a -D on the Gradle command line reaches the daemon and not the
+    // test — OpenApiSpecSnapshotTest silently kept asserting instead of regenerating until this
+    // was forwarded explicitly. Declared as an input so changing it re-runs the task rather than
+    // being served an UP-TO-DATE result that ignored the flag.
+    val updateOpenApiSpec = providers.systemProperty("updateOpenApiSpec").orElse("false")
+    inputs.property("updateOpenApiSpec", updateOpenApiSpec)
+    systemProperty("updateOpenApiSpec", updateOpenApiSpec.get())
 }

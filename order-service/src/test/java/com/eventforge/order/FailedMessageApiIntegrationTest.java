@@ -57,6 +57,9 @@ class FailedMessageApiIntegrationTest extends AbstractPostgresKafkaIntegrationTe
 
     @BeforeEach
     void captureOneFailure() {
+        // Both tables, not just one: the audit assertions below read the newest row, so a sibling
+        // test method's leftover action would be what they inspect.
+        jdbcTemplate.update("TRUNCATE TABLE operator_action");
         jdbcTemplate.update("TRUNCATE TABLE failed_messages");
         failedMessageId = UUID.randomUUID();
         store.capture(new FailedMessageRow(
@@ -128,6 +131,36 @@ class FailedMessageApiIntegrationTest extends AbstractPostgresKafkaIntegrationTe
         mockMvc.perform(MockMvcRequestBuilders.post("/failed-messages/{id}/replay", failedMessageId)
                         .with(SecurityMockMvcRequestPostProcessors.httpBasic("operator", "operator")))
                 .andExpect(MockMvcResultMatchers.status().isConflict());
+    }
+
+    /**
+     * The actor is whoever authenticated, not whoever the request claims to be. Asserted through
+     * the real filter chain, because that is the only place the principal actually comes from.
+     */
+    @Test
+    void theAuditTrailRecordsTheAuthenticatedPrincipalAsTheActor() throws Exception {
+        mockMvc.perform(MockMvcRequestBuilders.post("/failed-messages/{id}/replay", failedMessageId)
+                        .with(SecurityMockMvcRequestPostProcessors.httpBasic("operator", "operator")))
+                .andExpect(MockMvcResultMatchers.status().isAccepted());
+
+        mockMvc.perform(MockMvcRequestBuilders.get("/operator-actions")
+                        .with(SecurityMockMvcRequestPostProcessors.httpBasic("viewer", "viewer")))
+                .andExpect(MockMvcResultMatchers.status().isOk())
+                .andExpect(MockMvcResultMatchers.jsonPath("$[0].actor").value("operator"))
+                .andExpect(MockMvcResultMatchers.jsonPath("$[0].actionType").value("REPLAY_FAILED_MESSAGE"))
+                .andExpect(MockMvcResultMatchers.jsonPath("$[0].targetId").value(failedMessageId.toString()))
+                .andExpect(MockMvcResultMatchers.jsonPath("$[0].status").value("SUCCEEDED"));
+    }
+
+    /** A VIEWER cannot replay, but can read who did — the trail is not only for people who can act. */
+    @Test
+    void theAuditTrailIsReadableByAViewerAndRequiresAuthentication() throws Exception {
+        mockMvc.perform(MockMvcRequestBuilders.get("/operator-actions"))
+                .andExpect(MockMvcResultMatchers.status().isUnauthorized());
+
+        mockMvc.perform(MockMvcRequestBuilders.get("/operator-actions")
+                        .with(SecurityMockMvcRequestPostProcessors.httpBasic("viewer", "viewer")))
+                .andExpect(MockMvcResultMatchers.status().isOk());
     }
 
     @Test
